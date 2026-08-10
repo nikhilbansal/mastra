@@ -338,11 +338,20 @@ export const mapWorkflowStreamChunkToWatchResult = (
   return prev;
 };
 
-const signalContentsToUserMessages = (contents: unknown, metadata: MastraDBMessageMetadata): MastraDBMessage[] => {
+const dateFromStreamValue = (value: unknown): Date => {
+  const date = new Date(typeof value === 'string' || typeof value === 'number' || value instanceof Date ? value : '');
+  return Number.isFinite(date.getTime()) ? date : new Date();
+};
+
+const signalContentsToUserMessages = (
+  contents: unknown,
+  metadata: MastraDBMessageMetadata,
+  createdAt?: unknown,
+): MastraDBMessage[] => {
   const makeUserMessage = (parts: MastraMessagePart[]): MastraDBMessage => ({
     id: `signal-${Date.now()}`,
     role: 'user',
-    createdAt: new Date(),
+    createdAt: dateFromStreamValue(createdAt),
     content: {
       format: 2,
       parts,
@@ -428,7 +437,7 @@ const signalContentsToUserMessages = (contents: unknown, metadata: MastraDBMessa
     const parts = contents.flatMap(toMessagePart);
     return parts.length
       ? [makeUserMessage(parts)]
-      : contents.flatMap(content => signalContentsToUserMessages(content, metadata));
+      : contents.flatMap(content => signalContentsToUserMessages(content, metadata, createdAt));
   }
 
   if (!contents || typeof contents !== 'object') return [];
@@ -557,7 +566,11 @@ export const accumulateChunk = ({ chunk, conversation, metadata }: AccumulateChu
         );
       }
 
-      const userMessages = signalContentsToUserMessages((chunk as any).data.contents, metadata);
+      const userMessages = signalContentsToUserMessages(
+        (chunk as any).data.contents,
+        metadata,
+        (chunk as any).data.createdAt,
+      );
       if (!userMessages.length) return result;
 
       const conversationWithFinishedAssistant = finishStreamingAssistantMessage(result);
