@@ -222,11 +222,14 @@ export interface SendAgentSignalResult<OUTPUT = unknown> {
    * resolves to `deliver`. `blocked` means the signal targeted a suspended
    * thread that cannot accept a new idle wake. `runId` is present on
    * `wake`/`deliver`/`blocked` only; for `persist`/`discard`, correlate via
-   * {@link signal}'s `id`. To await a `persist` write, use {@link persisted}.
+   * {@link signal}'s `id`. To await a storage write when one is scheduled, use
+   * {@link persisted}. Implementations may also expose {@link persisted} for
+   * accepted user messages that wake or join a run, so HTTP callers can wait
+   * until the visible user row is durable before acknowledging the send.
    */
   accepted: Promise<SendAgentSignalAccepted<OUTPUT>>;
   signal: CreatedAgentSignal;
-  /** Resolves when a `persist` behavior finishes writing the signal to memory. */
+  /** Resolves when the accepted signal row has been written to memory, if one is scheduled. */
   persisted?: Promise<void>;
 }
 

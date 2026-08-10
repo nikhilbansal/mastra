@@ -72,7 +72,7 @@ export type MastraDBMessageMetadata = {
    * optimistically-appended user message that is awaiting its server signal
    * echo; it is cleared once the echo arrives and is stripped on reload.
    */
-  status?: 'warning' | 'error' | 'tripwire' | 'pending';
+  status?: 'warning' | 'error' | 'tripwire' | 'pending' | 'streaming' | 'done';
   /** Reason recorded by the upstream stream when it finishes. */
   finishReason?: string;
   /** Tripwire metadata when status === 'tripwire'. */

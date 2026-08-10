@@ -1883,6 +1883,70 @@ function handleSignalRoutingError(error: unknown, defaultMessage: string): never
   return handleError(error, defaultMessage);
 }
 
+async function ensureWritableMemoryThread({
+  agent,
+  requestContext,
+  resourceId,
+  threadId,
+}: {
+  agent: any;
+  requestContext: RequestContext;
+  resourceId: string | undefined;
+  threadId: string | undefined;
+}) {
+  if (!resourceId || !threadId) return;
+  const memory = await agent.getMemory({ requestContext });
+  if (!memory) return;
+  const thread = await memory.getThreadById({ threadId });
+  if (thread) {
+    await validateThreadOwnership(thread, resourceId);
+    return;
+  }
+  try {
+    await memory.createThread({ resourceId, threadId });
+  } catch (error) {
+    const existing = await memory.getThreadById({ threadId });
+    if (existing) {
+      await validateThreadOwnership(existing, resourceId);
+      return;
+    }
+    throw error;
+  }
+}
+
+async function runAgentDispatchAdmission({
+  mastra,
+  agentId,
+  requestContext,
+  runId,
+  resourceId,
+  threadId,
+  message,
+  signal,
+}: {
+  mastra: any;
+  agentId: string;
+  requestContext: RequestContext;
+  runId: string | undefined;
+  resourceId: string | undefined;
+  threadId: string | undefined;
+  message?: unknown;
+  signal?: unknown;
+}) {
+  const admission = mastra.getServer?.()?.agentDispatchAdmission;
+  if (typeof admission !== 'function') return;
+
+  await admission({
+    agentId,
+    requestContext,
+    ...(runId ? { runId } : {}),
+    ...(resourceId ? { resourceId } : {}),
+    ...(threadId ? { threadId } : {}),
+    ...(message !== undefined ? { message } : {}),
+    ...(signal !== undefined ? { signal } : {}),
+  });
+}
+
 const sendAgentMessageResponseSchema = sendAgentSignalResponseSchema;
 
 export const SEND_AGENT_SIGNAL_ROUTE: ServerRoute<
@@ -1948,19 +2012,28 @@ export const SEND_AGENT_SIGNAL_ROUTE: ServerRoute<
         },
       };
 
-      if (effectiveThreadId && effectiveResourceId) {
-        const memory = await agent.getMemory({ requestContext: serverRequestContext });
-        if (memory) {
-          const thread = await memory.getThreadById({ threadId: effectiveThreadId });
-          await validateThreadOwnership(thread, effectiveResourceId);
-        }
-      }
+      await ensureWritableMemoryThread({
+        agent,
+        requestContext: serverRequestContext,
+        resourceId: effectiveResourceId,
+        threadId: effectiveThreadId,
+      });
 
       if (typeof (agent as { sendSignal?: unknown }).sendSignal !== 'function') {
         throw new HTTPException(501, { message: 'agent signals are not supported by this Mastra core version' });
       }
 
       const agentSignal = signal as AgentSignalInput;
+
+      await runAgentDispatchAdmission({
+        mastra,
+        agentId,
+        requestContext: serverRequestContext,
+        runId,
+        resourceId: effectiveResourceId,
+        threadId: effectiveThreadId,
+        signal: agentSignal,
+      });
 
       if (runId) {
         const result = await agent.sendSignal(agentSignal, {
@@ -1975,6 +2048,7 @@ export const SEND_AGENT_SIGNAL_ROUTE: ServerRoute<
         // never start a run, so we fall back to the caller's `runId` to keep the wire
         // contract (`runId: string`) stable.
         const settled = await result.accepted;
+        await result.persisted;
         const settledRunId = 'runId' in settled ? settled.runId : runId;
         return result.signal === undefined
           ? { accepted: true as const, runId: settledRunId }
@@ -1995,6 +2069,7 @@ export const SEND_AGENT_SIGNAL_ROUTE: ServerRoute<
       // `persist`/`discard` never start a run; the stored-message id (`result.signal.id`)
       // is the correlatable id for those, keeping the wire contract (`runId: string`) stable.
       const settled = await result.accepted;
+      await result.persisted;
       const settledRunId = 'runId' in settled ? settled.runId : result.signal?.id;
       return result.signal === undefined
         ? { accepted: true as const, runId: settledRunId }
@@ -2052,17 +2127,26 @@ async function handleAgentMessageRoute({
     },
   };
 
-  if (effectiveThreadId && effectiveResourceId) {
-    const memory = await agent.getMemory({ requestContext: serverRequestContext });
-    if (memory) {
-      const thread = await memory.getThreadById({ threadId: effectiveThreadId });
-      await validateThreadOwnership(thread, effectiveResourceId);
-    }
-  }
+  await ensureWritableMemoryThread({
+    agent,
+    requestContext: serverRequestContext,
+    resourceId: effectiveResourceId,
+    threadId: effectiveThreadId,
+  });
 
   if (typeof (agent as unknown as Record<string, unknown>)[methodName] !== 'function') {
     throw new HTTPException(501, { message: `agent ${methodName} is not supported by this Mastra core version` });
   }
+
+  await runAgentDispatchAdmission({
+    mastra,
+    agentId,
+    requestContext: serverRequestContext,
+    runId,
+    resourceId: effectiveResourceId,
+    threadId: effectiveThreadId,
+    message,
+  });
 
   if (runId) {
     const result = await agent[methodName](message, {
@@ -2072,6 +2156,7 @@ async function handleAgentMessageRoute({
       ...(ifActive ? { ifActive } : {}),
     } as any);
     const settled = await result.accepted;
+    await result.persisted;
     const settledRunId: string = settled && 'runId' in settled ? settled.runId : runId;
     return result.signal === undefined
       ? { accepted: true as const, runId: settledRunId }
@@ -2089,6 +2174,7 @@ async function handleAgentMessageRoute({
     ...ifIdleWithContext,
   } as any);
   const settled = await result.accepted;
+  await result.persisted;
   const settledRunId: string = settled && 'runId' in settled ? settled.runId : result.signal?.id;
   return result.signal === undefined
     ? { accepted: true as const, runId: settledRunId }

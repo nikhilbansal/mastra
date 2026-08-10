@@ -216,6 +216,20 @@ export type StoredResourcesConfig = {
   scope?: StoredResourceScopeConfig;
 };
 
+export type AgentDispatchAdmissionInput = {
+  agentId: string;
+  requestContext: RequestContext;
+  runId?: string;
+  resourceId?: string;
+  threadId?: string;
+  message?: unknown;
+  signal?: unknown;
+};
+
+export type AgentDispatchAdmissionHook = (
+  input: AgentDispatchAdmissionInput,
+) => void | Promise<void>;
+
 export type ServerConfig = {
   /**
    * Port for the server
@@ -405,6 +419,17 @@ export type ServerConfig = {
    * Stored-resource route and handler behavior.
    */
   storedResources?: StoredResourcesConfig;
+
+  /**
+   * Runs after effective resource/thread ownership has been resolved and
+   * before native agent message/signal dispatch begins.
+   *
+   * Use this for application admission policies that must happen after server
+   * auth has populated RequestContext but before a native agent run can start.
+   * The hook must stay application-owned; Mastra supplies only the generic
+   * coordinates and payload.
+   */
+  agentDispatchAdmission?: AgentDispatchAdmissionHook;
 
   /**
    * If you want to run `mastra dev` with HTTPS, you can run it with the `--https` flag and provide the key and cert files here.

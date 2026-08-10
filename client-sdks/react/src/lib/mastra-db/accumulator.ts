@@ -102,7 +102,10 @@ const newAssistantMessage = (
   content: {
     format: 2,
     parts,
-    metadata: cloneMetadata(metadata),
+    metadata: {
+      ...cloneMetadata(metadata),
+      status: 'streaming',
+    },
   } satisfies MastraMessageContentV2,
 });
 
@@ -112,6 +115,14 @@ const appendAssistantMessage = (
   parts: MastraMessagePart[],
   metadata: MastraDBMessageMetadata,
 ): MastraDBMessage[] => [...conversation, newAssistantMessage(id, parts, metadata)];
+
+const isOpenAssistantMessage = (
+  message: MastraDBMessage | undefined,
+  metadata: MastraDBMessageMetadata,
+): message is MastraDBMessage =>
+  message?.role === 'assistant' &&
+  message.content.metadata?.mode === metadata.mode &&
+  message.content.metadata?.status === 'streaming';
 
 const isToolPart = (part: MastraMessagePart): part is MastraToolInvocationPart => part.type === 'tool-invocation';
 
@@ -143,7 +154,12 @@ export const finishStreamingAssistantMessage = (conversation: MastraDBMessage[])
     return part;
   });
 
-  return replaceLast(conversation, withParts(lastMessage, nextParts));
+  const currentMetadata = lastMessage.content.metadata as MastraDBMessageMetadata | undefined;
+  const nextMessage = currentMetadata?.status === 'streaming'
+    ? withMetadata(withParts(lastMessage, nextParts), { ...currentMetadata, status: 'done' })
+    : withParts(lastMessage, nextParts);
+
+  return replaceLast(conversation, nextMessage);
 };
 
 /**
@@ -562,8 +578,13 @@ export const accumulateChunk = ({ chunk, conversation, metadata }: AccumulateChu
     } as unknown as MastraMessagePart;
 
     const lastMessage = result[result.length - 1];
-    if (!lastMessage || lastMessage.role !== 'assistant') {
-      return appendAssistantMessage(result, `data-${chunk.runId}-${Date.now()}`, [dataPart], metadata);
+    if (!isOpenAssistantMessage(lastMessage, metadata)) {
+      return appendAssistantMessage(
+        finishStreamingAssistantMessage(result),
+        `data-${chunk.runId}-${Date.now()}`,
+        [dataPart],
+        metadata,
+      );
     }
 
     return replaceLast(result, withParts(lastMessage, [...lastMessage.content.parts, dataPart]));
@@ -619,9 +640,9 @@ export const accumulateChunk = ({ chunk, conversation, metadata }: AccumulateChu
         providerMetadata: chunk.payload.providerMetadata,
       };
 
-      if (!lastMessage || lastMessage.role !== 'assistant') {
+      if (!isOpenAssistantMessage(lastMessage, metadata)) {
         return appendAssistantMessage(
-          result,
+          finishStreamingAssistantMessage(result),
           `start-${chunk.runId}-${Date.now()}`,
           [newTextPart as MastraMessagePart],
           metadata,
@@ -662,7 +683,7 @@ export const accumulateChunk = ({ chunk, conversation, metadata }: AccumulateChu
       const lastMessage = result[result.length - 1];
       const textId = chunk.payload.id;
 
-      if (!lastMessage || lastMessage.role !== 'assistant') {
+      if (!isOpenAssistantMessage(lastMessage, metadata)) {
         const newTextPart: MastraTextPart = {
           type: 'text',
           text: chunk.payload.text,
@@ -671,7 +692,7 @@ export const accumulateChunk = ({ chunk, conversation, metadata }: AccumulateChu
           providerMetadata: chunk.payload.providerMetadata,
         };
         return appendAssistantMessage(
-          result,
+          finishStreamingAssistantMessage(result),
           `text-${chunk.runId}-${Date.now()}`,
           [newTextPart as MastraMessagePart],
           metadata,
@@ -738,9 +759,9 @@ export const accumulateChunk = ({ chunk, conversation, metadata }: AccumulateChu
         providerMetadata: chunk.payload.providerMetadata,
       };
 
-      if (!lastMessage || lastMessage.role !== 'assistant') {
+      if (!isOpenAssistantMessage(lastMessage, metadata)) {
         return appendAssistantMessage(
-          result,
+          finishStreamingAssistantMessage(result),
           `reasoning-${chunk.runId + Date.now()}`,
           [newReasoningPart as unknown as MastraMessagePart],
           metadata,
@@ -755,7 +776,7 @@ export const accumulateChunk = ({ chunk, conversation, metadata }: AccumulateChu
 
     case 'reasoning-delta': {
       const lastMessage = result[result.length - 1];
-      if (!lastMessage || lastMessage.role !== 'assistant') {
+      if (!isOpenAssistantMessage(lastMessage, metadata)) {
         const newReasoningPart: MastraReasoningPart = {
           type: 'reasoning',
           reasoning: chunk.payload.text,
@@ -763,7 +784,7 @@ export const accumulateChunk = ({ chunk, conversation, metadata }: AccumulateChu
           providerMetadata: chunk.payload.providerMetadata,
         };
         return appendAssistantMessage(
-          result,
+          finishStreamingAssistantMessage(result),
           `reasoning-${chunk.runId + Date.now()}`,
           [newReasoningPart as unknown as MastraMessagePart],
           metadata,
@@ -851,9 +872,9 @@ export const accumulateChunk = ({ chunk, conversation, metadata }: AccumulateChu
         providerMetadata: chunk.payload.providerMetadata,
       };
 
-      if (!lastMessage || lastMessage.role !== 'assistant') {
+      if (!isOpenAssistantMessage(lastMessage, metadata)) {
         return appendAssistantMessage(
-          result,
+          finishStreamingAssistantMessage(result),
           `redacted-reasoning-${chunk.runId + Date.now()}`,
           [redactedPart as unknown as MastraMessagePart],
           metadata,
@@ -909,8 +930,13 @@ export const accumulateChunk = ({ chunk, conversation, metadata }: AccumulateChu
       }
 
       const lastMessage = result[result.length - 1];
-      if (!lastMessage || lastMessage.role !== 'assistant') {
-        return appendAssistantMessage(result, `tool-call-${chunk.runId + Date.now()}`, [newPart], metadata);
+      if (!isOpenAssistantMessage(lastMessage, metadata)) {
+        return appendAssistantMessage(
+          finishStreamingAssistantMessage(result),
+          `tool-call-${chunk.runId + Date.now()}`,
+          [newPart],
+          metadata,
+        );
       }
 
       return replaceLast(result, withParts(lastMessage, [...lastMessage.content.parts, newPart]));
@@ -932,9 +958,9 @@ export const accumulateChunk = ({ chunk, conversation, metadata }: AccumulateChu
         argsText: '',
       };
 
-      if (!lastMessage || lastMessage.role !== 'assistant') {
+      if (!isOpenAssistantMessage(lastMessage, metadata)) {
         return appendAssistantMessage(
-          result,
+          finishStreamingAssistantMessage(result),
           `tool-call-streaming-${chunk.runId + Date.now()}`,
           [newPart as MastraMessagePart],
           metadata,

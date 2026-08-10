@@ -939,6 +939,19 @@ export class AgentThreadStreamRuntime {
     });
   }
 
+  #persistAcceptedUserSignal(
+    agent: Agent<any, any, any, any>,
+    signal: CreatedAgentSignal,
+    resourceId: string,
+    threadId: string,
+    requestContext?: RequestContext,
+  ) {
+    if (signal.type !== 'user' || signal.transient) return undefined;
+    const persisted = this.#persistSignal(agent, signal, resourceId, threadId, requestContext);
+    void persisted.catch(() => {});
+    return persisted;
+  }
+
   #broadcastPersistedSignal(
     state: AgentThreadRuntimeState,
     pubsub: PubSub | undefined,
@@ -1853,10 +1866,11 @@ export class AgentThreadStreamRuntime {
     let cancelledByAbort = false;
 
     const markActiveIfLive = async (runId: string, streamId: string, local: boolean) => {
-      if (!local && !(await this.#hasLiveThreadLease(resolvedPubSub, key, runId))) return;
+      if (!local && !(await this.#hasLiveThreadLease(resolvedPubSub, key, runId))) return false;
       state.activeThreadRunIds.set(key, runId);
       state.activeThreadStreamIds.set(key, streamId);
       if (!local) state.remoteThreadKeysByRunId.set(runId, key);
+      return true;
     };
 
     // A deferred run may be flushed only when its replayed chunks ended with a
@@ -1957,7 +1971,7 @@ export class AgentThreadStreamRuntime {
           state.activeThreadRunIds.get(key) !== data.runId ||
           state.activeThreadStreamIds.get(key) !== data.streamId
         ) {
-          await markActiveIfLive(data.runId, data.streamId, false);
+          if (!(await markActiveIfLive(data.runId, data.streamId, false))) return;
         }
         let remoteRun = remoteRuns.get(data.streamId);
         if (!remoteRun) {
@@ -2254,12 +2268,20 @@ export class AgentThreadStreamRuntime {
     const queuedStreamOptions = target.ifIdle?.streamOptions ?? activeRecord?.streamOptions;
 
     if (activeRecord) {
+      const persisted = this.#persistAcceptedUserSignal(
+        agent,
+        signal,
+        resourceId,
+        threadId,
+        queuedStreamOptions?.requestContext,
+      );
       const idleQueue = state.pendingIdleSignalsByThread.get(key) ?? [];
       idleQueue.push({ agent, signal, runId: queuedRunId, resourceId, threadId, streamOptions: queuedStreamOptions });
       state.pendingIdleSignalsByThread.set(key, idleQueue);
       this.#watchThreadRunCompletion(state, pubsub, key, activeRecord);
       return {
         signal,
+        persisted,
         accepted: Promise.resolve({ action: 'deliver' as const, runId: queuedRunId }),
       };
     }
@@ -2444,6 +2466,13 @@ export class AgentThreadStreamRuntime {
         if (activeRecord.agent.id === agent.id) {
           // Same-agent active run: queue the signal for in-loop draining so it becomes
           // the next model input instead of waiting for the run to finish.
+          const persisted = this.#persistAcceptedUserSignal(
+            agent,
+            signal,
+            activeRecord.resourceId,
+            activeRecord.threadId,
+            target.ifIdle?.streamOptions?.requestContext ?? activeRecord.streamOptions?.requestContext,
+          );
           const queue = state.pendingSignalsByThread.get(key) ?? [];
           queue.push(signal);
           state.pendingSignalsByThread.set(key, queue);
@@ -2456,6 +2485,7 @@ export class AgentThreadStreamRuntime {
           this.#watchThreadRunCompletion(state, pubsub, key, activeRecord);
           return {
             signal,
+            persisted,
             accepted: Promise.resolve({ action: 'deliver' as const, runId }),
           };
         }
@@ -2477,6 +2507,13 @@ export class AgentThreadStreamRuntime {
         // by another runtime instance is reached only via PubSub; treat it as a
         // follow-up, since the sender cannot see the owner's request state.
         const isLocalReservedRun = state.threadKeysByRunId.get(runId) === key;
+        const persisted = this.#persistAcceptedUserSignal(
+          agent,
+          signal,
+          resourceId,
+          threadId,
+          target.ifIdle?.streamOptions?.requestContext,
+        );
         if (isLocalReservedRun) {
           const queue = state.preRunSignalsByThread.get(key) ?? [];
           queue.push(signal);
@@ -2491,6 +2528,7 @@ export class AgentThreadStreamRuntime {
         });
         return {
           signal,
+          persisted,
           accepted: Promise.resolve({ action: 'deliver' as const, runId }),
         };
       }
@@ -2552,6 +2590,13 @@ export class AgentThreadStreamRuntime {
 
       // Another run owns the thread. Queue this idle-start request and let the watcher
       // launch it only after the active run clears the thread reservation.
+      const persisted = this.#persistAcceptedUserSignal(
+        agent,
+        signal,
+        resourceId,
+        threadId,
+        target.ifIdle?.streamOptions?.requestContext,
+      );
       const idleQueue = state.pendingIdleSignalsByThread.get(key) ?? [];
       idleQueue.push({ agent, signal, runId, resourceId, threadId, streamOptions: target.ifIdle?.streamOptions });
       state.pendingIdleSignalsByThread.set(key, idleQueue);
@@ -2560,6 +2605,7 @@ export class AgentThreadStreamRuntime {
       }
       return {
         signal,
+        persisted,
         accepted: Promise.resolve({ action: 'deliver' as const, runId }),
       };
     }
@@ -2568,6 +2614,13 @@ export class AgentThreadStreamRuntime {
     // the idle stream so concurrent callers do not launch duplicate runs.
     state.activeThreadRunIds.set(key, runId);
     state.threadKeysByRunId.set(runId, key);
+    const persisted = this.#persistAcceptedUserSignal(
+      agent,
+      signal,
+      resourceId,
+      threadId,
+      target.ifIdle?.streamOptions?.requestContext,
+    );
     const reservedKey = key;
     const reservedRunId = runId;
     const resolvedPubSub = this.#getPubSub(pubsub);
@@ -2650,6 +2703,7 @@ export class AgentThreadStreamRuntime {
 
     return {
       signal,
+      persisted,
       accepted,
     };
   }
