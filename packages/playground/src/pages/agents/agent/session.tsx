@@ -30,9 +30,10 @@ function AgentSession() {
   const newThreadId = useMemo(() => uuid(), [threadId]);
 
   const hasMemory = Boolean(memory?.result);
+  const memoryResourceId = searchParams.get('resourceId') || undefined;
 
   const { refetch: refreshThreads } = useThreads({
-    resourceId: agentId!,
+    resourceId: memoryResourceId,
     agentId: agentId!,
     isMemoryEnabled: hasMemory,
   });

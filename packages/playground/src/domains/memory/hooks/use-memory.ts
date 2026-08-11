@@ -56,7 +56,7 @@ export const useThreads = ({
   agentId,
   isMemoryEnabled,
 }: {
-  resourceId: string;
+  resourceId?: string;
   agentId: string;
   isMemoryEnabled: boolean;
 }) => {
@@ -64,7 +64,7 @@ export const useThreads = ({
   const requestContext = useMergedRequestContext();
 
   return useQuery({
-    queryKey: ['memory', 'threads', resourceId, agentId, requestContext],
+    queryKey: ['memory', 'threads', resourceId ?? 'all', agentId, requestContext],
     queryFn: async () => {
       if (!isMemoryEnabled) return null;
       const result = await client.listMemoryThreads({ resourceId, agentId, requestContext });
@@ -91,7 +91,7 @@ export const useDeleteThread = () => {
     onSuccess: (_, variables) => {
       const { agentId } = variables;
       if (agentId) {
-        void queryClient.invalidateQueries({ queryKey: ['memory', 'threads', agentId, agentId] });
+        void queryClient.invalidateQueries({ queryKey: ['memory', 'threads'] });
       }
       toast.success('Chat deleted successfully');
     },
@@ -132,7 +132,7 @@ export const useCloneThread = () => {
     onSuccess: (_, variables) => {
       const { agentId } = variables;
       if (agentId) {
-        void queryClient.invalidateQueries({ queryKey: ['memory', 'threads', agentId, agentId] });
+        void queryClient.invalidateQueries({ queryKey: ['memory', 'threads'] });
       }
       toast.success('Thread cloned successfully');
     },

@@ -49,12 +49,13 @@ function Agent({ view = 'chat' }: { view?: 'chat' | 'settings' }) {
   const newThreadId = useMemo(() => uuid(), [threadId]);
 
   const hasMemory = Boolean(memory?.result);
+  const memoryResourceId = searchParams.get('resourceId') || undefined;
 
   const {
     data: threads,
     isLoading: isThreadsLoading,
     refetch: refreshThreads,
-  } = useThreads({ agentId: agentId!, isMemoryEnabled: hasMemory, resourceId: agentId! });
+  } = useThreads({ agentId: agentId!, isMemoryEnabled: hasMemory, resourceId: memoryResourceId });
 
   const sidebarThreads = useMemo(
     () =>
