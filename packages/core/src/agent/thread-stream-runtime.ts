@@ -2112,7 +2112,7 @@ export class AgentThreadStreamRuntime {
       return processed.then(() => ack?.());
     };
 
-    await resolvedPubSub.subscribe(topic, onEvent);
+    await resolvedPubSub.subscribe(topic, onEvent, { start: 'latest' });
 
     const currentRunId = activeRunId();
     const currentRecord = currentRunId ? state.threadRunsById.get(currentRunId) : undefined;

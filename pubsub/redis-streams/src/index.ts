@@ -290,19 +290,22 @@ export class RedisStreamsPubSub extends PubSub implements LeaseProvider {
     const group = options?.group ?? `__fanout-${randomUUID()}`;
     const consumer = `${group}-${randomUUID()}`;
     const streamKey = this.#streamKey(topic);
+    const startId = options?.start === 'latest' ? '$' : '0';
 
     // Create the consumer group if it doesn't exist. MKSTREAM creates the
     // stream if needed. BUSYGROUP means another subscriber raced us — fine.
     //
-    // We anchor brand-new groups at '0' (stream start) instead of '$' so that
+    // We anchor brand-new groups at '0' (stream start) by default so that
     // a worker which subscribes after a publish still sees the backlog. This
     // is the "late join" case: a server may publish workflow.start before any
     // orchestrator process exists. Without this, that work is silently lost.
+    // Live observers can pass start: 'latest' to skip retained backlog and
+    // receive only events published after subscribing.
     // Existing groups (BUSYGROUP path) keep their own checkpoint, so this
     // doesn't change semantics for already-running clusters. Stream growth is
     // bounded by the MAXLEN ~ trim applied on every publish.
     try {
-      await this.#writeClient.xGroupCreate(streamKey, group, '0', { MKSTREAM: true });
+      await this.#writeClient.xGroupCreate(streamKey, group, startId, { MKSTREAM: true });
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
       if (!msg.includes('BUSYGROUP')) throw err;
@@ -322,6 +325,7 @@ export class RedisStreamsPubSub extends PubSub implements LeaseProvider {
       group,
       consumer,
       isGrouped,
+      startId,
       readClient,
       stopped: false,
       loop: undefined,
@@ -620,8 +624,8 @@ export class RedisStreamsPubSub extends PubSub implements LeaseProvider {
           // returns NOGROUP immediately, ignoring BLOCK, so without recovery
           // this loop busy-retries forever and the subscriber goes permanently
           // deaf — a later publish recreates the stream but not the group.
-          // Recreate the group (anchored at '0', matching subscribe()) so
-          // delivery resumes.
+          // Recreate the group at the same cursor chosen by subscribe() so
+          // delivery resumes without changing backlog/live-only semantics.
           try {
             if (this.#streamIdleTtlMs > 0) {
               // MKSTREAM recreates an (empty) stream key, so the TTL must be
@@ -635,11 +639,11 @@ export class RedisStreamsPubSub extends PubSub implements LeaseProvider {
               // even on that path.
               await this.#writeClient
                 .multi()
-                .xGroupCreate(sub.streamKey, sub.group, '0', { MKSTREAM: true })
+                .xGroupCreate(sub.streamKey, sub.group, sub.startId, { MKSTREAM: true })
                 .pExpire(sub.streamKey, this.#streamIdleTtlMs)
                 .exec();
             } else {
-              await this.#writeClient.xGroupCreate(sub.streamKey, sub.group, '0', { MKSTREAM: true });
+              await this.#writeClient.xGroupCreate(sub.streamKey, sub.group, sub.startId, { MKSTREAM: true });
             }
             this.#logger?.debug?.('redis-streams: recreated consumer group after NOGROUP', {
               topic: sub.topic,
@@ -849,6 +853,7 @@ interface Subscription {
   group: string;
   consumer: string;
   isGrouped: boolean;
+  startId: '0' | '$';
   readClient: RedisClientType;
   stopped: boolean;
   loop: Promise<void> | undefined;

@@ -81,6 +81,13 @@ export interface SubscribeOptions {
    */
   group?: string;
   /**
+   * Where a retained-transport subscription should begin when it creates a
+   * new consumer cursor. Defaults to 'earliest' so worker-style subscribers
+   * can pick up backlog. UI/live observers can use 'latest' to receive only
+   * events published after subscribing.
+   */
+  start?: 'earliest' | 'latest';
+  /**
    * Opt-in batching policy. When omitted, behavior is unchanged.
    */
   batch?: SubscribeBatchOptions;

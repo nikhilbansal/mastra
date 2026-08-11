@@ -1175,7 +1175,7 @@ export const useChat = ({
         ? `client-set-${uuid()}`
         : undefined;
     const signalId = clientSetId;
-    const clientMessageId = clientSetId;
+    const clientMessageId = args.clientMessageId ?? clientSetId;
 
     if (signalId) {
       // Signal path: append the user turn optimistically as `pending` with a
