@@ -1132,7 +1132,11 @@ export const accumulateChunk = ({ chunk, conversation, metadata }: AccumulateChu
         if (isError) {
           const error =
             chunk.type === 'tool-error' || chunk.type === 'background-task-failed' ? payloadError : payloadResult;
-          const errorText = getErrorFromUnknown(error, { fallbackMessage: 'Tool execution failed' }).message;
+          const normalizedError = getErrorFromUnknown(error, { fallbackMessage: 'Tool execution failed' });
+          let errorText = normalizedError.message;
+          if (error && typeof error === 'object' && !('message' in error) && 'cause' in error) {
+            errorText = getErrorFromUnknown(error.cause, { fallbackMessage: errorText }).message;
+          }
 
           parts[toolPartIndex] = {
             ...toolPart,
