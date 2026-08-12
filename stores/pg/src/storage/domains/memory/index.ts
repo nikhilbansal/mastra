@@ -1494,21 +1494,6 @@ export class MemoryPG extends MemoryStorage {
         threadIds.add(message.threadId);
       }
 
-      for (const threadIdToCheck of threadIds) {
-        const thread = await this.getThreadById({ threadId: threadIdToCheck });
-        if (!thread) {
-          throw new MastraError({
-            id: createStorageErrorId('PG', 'SAVE_MESSAGES', 'FAILED'),
-            domain: ErrorDomain.STORAGE,
-            category: ErrorCategory.THIRD_PARTY,
-            text: `Thread ${threadIdToCheck} not found`,
-            details: {
-              threadId: threadIdToCheck,
-            },
-          });
-        }
-      }
-
       const messagesToSave = dedupeMessagesForSave(messages);
       await this.#db.client.tx(async t => {
         for (let offset = 0; offset < messagesToSave.length; offset += MAX_MESSAGES_PER_INSERT) {
