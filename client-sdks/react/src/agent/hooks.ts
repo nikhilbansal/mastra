@@ -1184,8 +1184,8 @@ export const useChat = ({
     const signalId = clientSetId;
     const clientMessageId = args.clientMessageId ?? clientSetId;
 
-    if (signalId) {
-      // Signal path: append the user turn optimistically as `pending` with a
+    if (signalId && !isRunning) {
+      // Idle signal path: append the user turn optimistically as `pending` with a
       // visibly client-owned id. The server echo can replace the final message
       // id while the matching client id reconciles the pending bubble.
       const metadata: MastraDBMessageMetadata = {
@@ -1196,7 +1196,7 @@ export const useChat = ({
       };
       const pendingMessage = { ...dbUserMessage, id: clientSetId, content: { ...dbUserMessage.content, metadata } };
       setMessages(s => [...s, pendingMessage]);
-    } else {
+    } else if (!signalId) {
       setMessages(s => [...s, dbUserMessage]);
     }
 
