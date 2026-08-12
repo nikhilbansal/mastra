@@ -801,7 +801,7 @@ export const useChat = ({
     };
 
     try {
-      const result = await agent.sendMessage({
+      const result = await agent.queueMessage({
         message: clientMessageId
           ? { contents: messageContents, metadata: { [CLIENT_MESSAGE_ID_KEY]: clientMessageId } }
           : messageContents,

@@ -13,7 +13,7 @@ import type { ClientToolsInput } from './types';
 // getAgent(). This lets us assert what the React hook actually forwards to the
 // underlying client-js Agent methods.
 const sendSignalMock = vi.fn(async () => ({ accepted: true, runId: 'run-mock' }));
-const sendMessageMock = vi.fn(async (_params?: unknown) => ({ accepted: true, runId: 'run-mock' }));
+const queueMessageMock = vi.fn(async (_params?: unknown) => ({ accepted: true, runId: 'run-mock' }));
 let nextApproveToolCallChunks: Array<any> = [];
 const approveToolCallProcessDataStreamMock = vi.fn(
   async ({ onChunk }: { onChunk: (chunk: any) => Promise<void> | void }) => {
@@ -102,7 +102,7 @@ vi.mock('@mastra/client-js', () => ({
     getAgent() {
       return {
         sendSignal: sendSignalMock,
-        sendMessage: sendMessageMock,
+        queueMessage: queueMessageMock,
         approveToolCall: approveToolCallMock,
         sendToolApproval: sendToolApprovalMock,
         declineToolCall: declineToolCallMock,
@@ -148,7 +148,7 @@ describe('useChat forwards clientTools', () => {
 
   beforeEach(() => {
     sendSignalMock.mockClear();
-    sendMessageMock.mockClear();
+    queueMessageMock.mockClear();
     approveToolCallMock.mockClear();
     sendToolApprovalMock.mockClear();
     declineToolCallMock.mockClear();
@@ -322,7 +322,7 @@ describe('useChat forwards clientTools', () => {
     );
 
     await waitFor(() => expect(result.current.isAwaitingToolApproval).toBe(true));
-    sendMessageMock.mockClear();
+    queueMessageMock.mockClear();
 
     await act(async () => {
       await result.current.sendMessage({
@@ -332,7 +332,7 @@ describe('useChat forwards clientTools', () => {
       });
     });
 
-    expect(sendMessageMock).toHaveBeenCalledWith(
+    expect(queueMessageMock).toHaveBeenCalledWith(
       expect.objectContaining({
         message: expect.objectContaining({
           metadata: expect.objectContaining({ [CLIENT_MESSAGE_ID_KEY]: expect.any(String) }),
@@ -901,7 +901,7 @@ describe('useChat forwards clientTools', () => {
   });
 
   it('resets isRunning when the signal send request itself fails', async () => {
-    sendMessageMock.mockRejectedValueOnce(new Error('network down'));
+    queueMessageMock.mockRejectedValueOnce(new Error('network down'));
 
     const { result } = renderHook(
       () =>
@@ -979,7 +979,7 @@ describe('useChat forwards clientTools', () => {
     const subscribeCalls = subscribeToThreadMock.mock.calls as unknown as Array<[any]>;
     const params = subscribeCalls[0]?.[0];
     expect(params).toEqual({ resourceId: 'resource-1', threadId: 'thread-1' });
-    const messageCalls = sendMessageMock.mock.calls as unknown as Array<[any]>;
+    const messageCalls = queueMessageMock.mock.calls as unknown as Array<[any]>;
     expect(messageCalls[0]?.[0].ifIdle.streamOptions.clientTools).toBe(clientTools);
   });
 
@@ -1039,8 +1039,8 @@ describe('useChat forwards clientTools', () => {
     expect(subscribeToThreadMock).toHaveBeenCalledTimes(1);
     expect(subscribeParams).toEqual({ resourceId: 'resource-1', threadId: 'thread-1' });
 
-    expect(sendMessageMock).toHaveBeenCalledTimes(2);
-    const messageCalls = sendMessageMock.mock.calls as unknown as Array<[any]>;
+    expect(queueMessageMock).toHaveBeenCalledTimes(2);
+    const messageCalls = queueMessageMock.mock.calls as unknown as Array<[any]>;
     expect(messageCalls[0]?.[0].ifIdle.streamOptions).toEqual(
       expect.objectContaining({
         maxSteps: 3,
@@ -1080,7 +1080,7 @@ describe('useChat forwards clientTools', () => {
     expect(streamMock).toHaveBeenCalledTimes(1);
     const calls = streamMock.mock.calls as unknown as Array<[unknown, { clientTools: unknown }]>;
     expect(calls[0]?.[1].clientTools).toBe(clientTools);
-    expect(sendMessageMock).not.toHaveBeenCalled();
+    expect(queueMessageMock).not.toHaveBeenCalled();
     expect(sendSignalMock).not.toHaveBeenCalled();
   });
 
@@ -1186,7 +1186,7 @@ describe('useChat forwards clientTools', () => {
 
 describe('useChat optimistic pending user message', () => {
   beforeEach(() => {
-    sendMessageMock.mockClear();
+    queueMessageMock.mockClear();
     streamMock.mockClear();
   });
 
@@ -1225,8 +1225,8 @@ describe('useChat optimistic pending user message', () => {
 
     // ...and the same id is sent to the server in the outgoing message metadata
     // so the echo can reconcile the pending bubble.
-    expect(sendMessageMock).toHaveBeenCalledTimes(1);
-    const sendArgs = sendMessageMock.mock.calls[0]?.[0] as
+    expect(queueMessageMock).toHaveBeenCalledTimes(1);
+    const sendArgs = queueMessageMock.mock.calls[0]?.[0] as
       | { message?: { metadata?: Record<string, unknown> } }
       | undefined;
     expect(sendArgs?.message?.metadata?.[CLIENT_MESSAGE_ID_KEY]).toBe(optimisticMessageId);
@@ -1329,7 +1329,7 @@ describe('useChat optimistic pending user message', () => {
 describe('useChat task state', () => {
   beforeEach(() => {
     sendSignalMock.mockClear();
-    sendMessageMock.mockClear();
+    queueMessageMock.mockClear();
     streamMock.mockClear();
     subscribeToThreadMock.mockClear();
     threadSubscriptionAbortMock.mockClear();
