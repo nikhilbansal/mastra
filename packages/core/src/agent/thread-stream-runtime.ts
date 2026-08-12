@@ -1045,6 +1045,89 @@ export class AgentThreadStreamRuntime {
     });
   }
 
+  /**
+   * Broadcast a transcript-free thread event to live thread subscribers.
+   * Mirrors the persisted-signal mini-run shape (start → thread-metadata →
+   * finish) without persisting anything and without touching the thread's
+   * active-run/stream pointers, so a live agent run is never disturbed.
+   * Consumers receive `{ type: 'thread-metadata', payload }` and must not
+   * render it as transcript content. Used for async thread facts such as
+   * title arrival and for account-scoped freshness nudges.
+   *
+   * @experimental Thread events are experimental and may change in a future release.
+   */
+  broadcastThreadEvent(
+    options: { resourceId?: string; threadId: string; payload: Record<string, unknown> },
+    pubsub?: PubSub,
+  ): void {
+    const state = this.#getState(pubsub);
+    const key = this.#threadKey(options.resourceId, options.threadId);
+    const runId = randomUUID();
+    let finish!: () => void;
+    const finished = new Promise<void>(resolve => {
+      finish = resolve;
+    });
+    // Deliberately unframed: no start/finish wrapper chunks. Consumers key
+    // loader state off start/finish, and a framed metadata event racing a live
+    // agent run would flip isRunning under it. The subscription lifecycle is
+    // already framed by run-registered/run-completed.
+    const parts: any[] = [
+      { type: 'thread-metadata', runId, payload: { threadId: options.threadId, ...options.payload } },
+    ];
+    const output = {
+      runId,
+      status: 'running',
+      fullStream: new ReadableStream({
+        start(controller) {
+          for (const part of parts) controller.enqueue(part);
+          controller.close();
+          finish();
+        },
+      }),
+      _waitUntilFinished: () => finished,
+    } as MastraModelOutput<any>;
+    const { streamId, streamSeq } = this.#nextStreamIdentity(state, runId);
+    const {
+      output: outputForSubscribers,
+      createSubscriberStream,
+      startBroadcast,
+      waitForBroadcast,
+    } = this.#withBroadcastStream(output, pubsub, key, streamId);
+    const record: AgentThreadRunRecord<any> = {
+      agent: { id: `thread-event:${runId}` } as Agent<any, any, any, any>,
+      output: outputForSubscribers,
+      runId,
+      streamId,
+      streamSeq,
+      lifecycle: 'running',
+      threadId: options.threadId,
+      resourceId: options.resourceId ?? '',
+      streamOptions: {},
+      createSubscriberStream,
+    };
+
+    state.threadRunsById.set(runId, record);
+    state.threadRunsByStreamId.set(streamId, record);
+    state.threadKeysByRunId.set(runId, key);
+    const registered = this.#publishAndWait(pubsub, key, { type: 'run-registered', runId, streamId, streamSeq });
+    record.waitForBroadcast = async () => {
+      await registered.catch(() => {});
+      await waitForBroadcast();
+    };
+    void registered.then(startBroadcast, startBroadcast);
+    void outputForSubscribers._waitUntilFinished().finally(() => {
+      void (async () => {
+        await record.waitForBroadcast?.();
+        state.threadRunsByStreamId.delete(streamId);
+        if (state.threadRunsById.get(runId) === record) {
+          state.threadRunsById.delete(runId);
+          state.threadKeysByRunId.delete(runId);
+        }
+        await this.#publishAndWait(pubsub, key, { type: 'run-completed', runId, streamId }).catch(() => {});
+      })();
+    });
+  }
+
   async #persistAndBroadcastIdleSignal(
     state: AgentThreadRuntimeState,
     pubsub: PubSub | undefined,
@@ -2466,13 +2549,15 @@ export class AgentThreadStreamRuntime {
         if (activeRecord.agent.id === agent.id) {
           // Same-agent active run: queue the signal for in-loop draining so it becomes
           // the next model input instead of waiting for the run to finish.
-          const persisted = this.#persistAcceptedUserSignal(
-            agent,
-            signal,
-            activeRecord.resourceId,
-            activeRecord.threadId,
-            target.ifIdle?.streamOptions?.requestContext ?? activeRecord.streamOptions?.requestContext,
-          );
+          const persisted = activeRecord.resourceId
+            ? this.#persistAcceptedUserSignal(
+                agent,
+                signal,
+                activeRecord.resourceId,
+                activeRecord.threadId,
+                target.ifIdle?.streamOptions?.requestContext ?? activeRecord.streamOptions?.requestContext,
+              )
+            : Promise.resolve(undefined);
           const queue = state.pendingSignalsByThread.get(key) ?? [];
           queue.push(signal);
           state.pendingSignalsByThread.set(key, queue);

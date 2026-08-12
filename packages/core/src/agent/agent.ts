@@ -7721,6 +7721,16 @@ export class Agent<
     );
   }
 
+  /**
+   * Broadcast a transcript-free thread event (e.g. async title arrival) to
+   * live thread subscribers over the same stream `subscribeToThread` serves.
+   *
+   * @experimental Thread events are experimental and may change in a future release.
+   */
+  broadcastThreadEvent(options: { resourceId?: string; threadId: string; payload: Record<string, unknown> }): void {
+    agentThreadStreamRuntime.broadcastThreadEvent(options, this.getPubSub());
+  }
+
   getActiveThreadRunId(options: AgentSubscribeToThreadOptions): string | undefined {
     return agentThreadStreamRuntime.getActiveThreadRunId(options, this.getPubSub());
   }

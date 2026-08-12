@@ -623,7 +623,7 @@ export const accumulateChunk = ({ chunk, conversation, metadata }: AccumulateChu
     }
 
     case 'start': {
-      const messageId = typeof chunk.payload.messageId === 'string' ? chunk.payload.messageId : undefined;
+      const messageId = typeof chunk.payload?.messageId === 'string' ? chunk.payload.messageId : undefined;
       if (messageId && result.some(message => message.id === messageId)) return result;
       return [...result, newAssistantMessage(messageId ?? `start-${chunk.runId + Date.now()}`, [], metadata)];
     }

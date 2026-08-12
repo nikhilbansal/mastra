@@ -176,6 +176,8 @@ export interface MastraChatProps {
   clientTools?: ClientToolsInput;
   onSignalSent?: (signalId: string, preview: string) => void;
   onSignalEcho?: (signalId: string) => void;
+  /** Transcript-free thread event (e.g. async title arrival) broadcast on the thread stream. @experimental */
+  onThreadMetadata?: (payload: Record<string, unknown>) => void;
   onThreadSignalsUnsupported?: () => void;
   /**
    * Use the agent-signals streaming path (sendSignal + subscribeToThread).
@@ -280,6 +282,7 @@ export const useChat = ({
   clientTools: hookClientTools,
   onSignalSent,
   onSignalEcho,
+  onThreadMetadata,
   onThreadSignalsUnsupported,
   enableThreadSignals = false,
 }: MastraChatProps) => {
@@ -414,6 +417,10 @@ export const useChat = ({
 
   const processStreamChunk = useCallback(
     async (chunk: ChunkType, onChunk?: (chunk: ChunkType) => Promise<void>) => {
+      if ((chunk as { type?: string }).type === 'thread-metadata') {
+        onThreadMetadata?.((chunk as { payload?: Record<string, unknown> }).payload ?? {});
+        return;
+      }
       setMessages(prev => accumulateChunk({ chunk, conversation: prev, metadata: { mode: 'stream' } }));
 
       const signalTasks = extractTasksFromSignalChunk(chunk);
@@ -454,7 +461,7 @@ export const useChat = ({
 
       void (onChunk ?? _onChunk.current)?.(chunk);
     },
-    [onSignalEcho],
+    [onSignalEcho, onThreadMetadata],
   );
 
   const ensureThreadSubscription = useCallback(
