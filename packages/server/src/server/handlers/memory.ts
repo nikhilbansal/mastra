@@ -835,8 +835,17 @@ export const LIST_THREADS_ROUTE = createRoute({
   requiresAuth: true,
   handler: async ({ mastra, agentId, resourceId, metadata, requestContext, page, perPage, orderBy }) => {
     try {
-      // Use effective resourceId (context key takes precedence over client-provided value)
-      const effectiveResourceId = getEffectiveResourceId(requestContext, resourceId);
+      let effectiveResourceId = getEffectiveResourceId(requestContext, resourceId);
+      let effectiveMetadata = metadata;
+      const resolveListScope = mastra.getServer?.()?.memoryThreadListScope;
+      if (resolveListScope) {
+        const scope = await resolveListScope({
+          requestContext,
+          user: requestContext?.get('user'),
+        });
+        effectiveResourceId = scope.resourceId;
+        effectiveMetadata = { ...metadata, ...scope.metadata };
+      }
 
       // Gateway proxy: list threads from gateway API
       const agent = await getAgentFromContext({ mastra, agentId, requestContext });
@@ -892,13 +901,13 @@ export const LIST_THREADS_ROUTE = createRoute({
 
       // Build filter object dynamically based on provided parameters
       const filter: { resourceId?: string; metadata?: Record<string, unknown> } | undefined =
-        effectiveResourceId || metadata ? {} : undefined;
+        effectiveResourceId || effectiveMetadata ? {} : undefined;
 
       if (effectiveResourceId) {
         filter!.resourceId = effectiveResourceId;
       }
-      if (metadata) {
-        filter!.metadata = metadata;
+      if (effectiveMetadata) {
+        filter!.metadata = effectiveMetadata;
       }
 
       const memory = await getMemoryFromContext({ mastra, agentId, requestContext, allowMissingAgent: true });

@@ -216,6 +216,16 @@ export type StoredResourcesConfig = {
   scope?: StoredResourceScopeConfig;
 };
 
+export type MemoryThreadListScope = {
+  resourceId?: string;
+  metadata?: Record<string, unknown>;
+};
+
+export type MemoryThreadListScopeResolver = (input: {
+  requestContext: RequestContext;
+  user?: unknown;
+}) => MemoryThreadListScope | Promise<MemoryThreadListScope>;
+
 export type AgentDispatchAdmissionInput = {
   agentId: string;
   requestContext: RequestContext;
@@ -419,6 +429,9 @@ export type ServerConfig = {
    * Stored-resource route and handler behavior.
    */
   storedResources?: StoredResourcesConfig;
+
+  /** Trusted storage filter for native memory-thread directory requests. */
+  memoryThreadListScope?: MemoryThreadListScopeResolver;
 
   /**
    * Runs after effective resource/thread ownership has been resolved and
