@@ -103,8 +103,8 @@ const newAssistantMessage = (
     format: 2,
     parts,
     metadata: {
-      ...cloneMetadata(metadata),
       status: 'streaming',
+      ...cloneMetadata(metadata),
     },
   } satisfies MastraMessageContentV2,
 });
@@ -155,9 +155,10 @@ export const finishStreamingAssistantMessage = (conversation: MastraDBMessage[])
   });
 
   const currentMetadata = lastMessage.content.metadata as MastraDBMessageMetadata | undefined;
-  const nextMessage = currentMetadata?.status === 'streaming'
-    ? withMetadata(withParts(lastMessage, nextParts), { ...currentMetadata, status: 'done' })
-    : withParts(lastMessage, nextParts);
+  const nextMessage =
+    currentMetadata?.status === 'streaming'
+      ? withMetadata(withParts(lastMessage, nextParts), { ...currentMetadata, status: 'done' })
+      : withParts(lastMessage, nextParts);
 
   return replaceLast(conversation, nextMessage);
 };
