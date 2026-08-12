@@ -208,8 +208,8 @@ export type SendAgentSignalAccepted<OUTPUT = unknown> =
 export interface SendAgentSignalResult<OUTPUT = unknown> {
   /**
    * Resolves once the runtime has decided what to do with the signal
-   * (`wake`/`deliver`/`persist`/`discard`/`blocked`). This settles at decision-time — it
-   * never waits for a woken run to finish or for a `persist` write to land.
+   * (`wake`/`deliver`/`persist`/`discard`/`blocked`). An idle user-message wake waits for
+   * its accepted message to persist before starting the run. It never waits for the run to finish.
    *
    * Rejects only when the signal cannot be routed/started at all — for example
    * a misconfigured agent that throws during stream setup (no model, an

@@ -154,6 +154,7 @@ type PreparedThreadRun = {
 type PendingIdleSignal<OUTPUT = unknown> = {
   agent: Agent<any, any, any, any>;
   signal: CreatedAgentSignal;
+  persisted?: Promise<void>;
   runId: string;
   resourceId: string;
   threadId: string;
@@ -674,7 +675,7 @@ export class AgentThreadStreamRuntime {
       let waiter: (() => void) | undefined;
       return new ReadableStream({
         async pull(controller) {
-          start();
+          void start();
           while (!closed) {
             if (index < parts.length) {
               controller.enqueue(parts[index++]);
@@ -1671,6 +1672,7 @@ export class AgentThreadStreamRuntime {
     }
 
     try {
+      await pendingIdle.persisted;
       const output = await pendingIdle.agent.stream(pendingIdle.signal, {
         ...(pendingIdle.streamOptions as any),
         runId: pendingIdle.runId,
@@ -2359,7 +2361,15 @@ export class AgentThreadStreamRuntime {
         queuedStreamOptions?.requestContext,
       );
       const idleQueue = state.pendingIdleSignalsByThread.get(key) ?? [];
-      idleQueue.push({ agent, signal, runId: queuedRunId, resourceId, threadId, streamOptions: queuedStreamOptions });
+      idleQueue.push({
+        agent,
+        signal,
+        persisted,
+        runId: queuedRunId,
+        resourceId,
+        threadId,
+        streamOptions: queuedStreamOptions,
+      });
       state.pendingIdleSignalsByThread.set(key, idleQueue);
       this.#watchThreadRunCompletion(state, pubsub, key, activeRecord);
       return {
@@ -2683,7 +2693,15 @@ export class AgentThreadStreamRuntime {
         target.ifIdle?.streamOptions?.requestContext,
       );
       const idleQueue = state.pendingIdleSignalsByThread.get(key) ?? [];
-      idleQueue.push({ agent, signal, runId, resourceId, threadId, streamOptions: target.ifIdle?.streamOptions });
+      idleQueue.push({
+        agent,
+        signal,
+        persisted,
+        runId,
+        resourceId,
+        threadId,
+        streamOptions: target.ifIdle?.streamOptions,
+      });
       state.pendingIdleSignalsByThread.set(key, idleQueue);
       if (activeRecord) {
         this.#watchThreadRunCompletion(state, pubsub, key, activeRecord);
@@ -2755,6 +2773,7 @@ export class AgentThreadStreamRuntime {
       // that outlive the TTL, then kick off the stream.
       this.#startLeaseRenewal(resolvedPubSub, reservedKey, reservedRunId);
       try {
+        await persisted;
         const output = await agent.stream(signal, {
           ...(target.ifIdle?.streamOptions as any),
           untilIdle: true,
