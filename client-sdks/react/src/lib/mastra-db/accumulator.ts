@@ -6,6 +6,7 @@ import type {
   MastraToolInvocation,
   MastraToolInvocationPart,
 } from '@mastra/core/agent/message-list';
+import { getErrorFromUnknown } from '@mastra/core/error';
 import type { AgentChunkType, ChunkType, NetworkChunkType } from '@mastra/core/stream';
 import type { WorkflowStreamResult, StepResult } from '@mastra/core/workflows';
 import { uint8ArrayToBase64, encodeFilePartDataForStorage } from '../../agent/signal-data';
@@ -1131,12 +1132,7 @@ export const accumulateChunk = ({ chunk, conversation, metadata }: AccumulateChu
         if (isError) {
           const error =
             chunk.type === 'tool-error' || chunk.type === 'background-task-failed' ? payloadError : payloadResult;
-          const errorText =
-            typeof error === 'string'
-              ? error
-              : error instanceof Error
-                ? error.message
-                : ((error as { message?: string } | null)?.message ?? String(error));
+          const errorText = getErrorFromUnknown(error, { fallbackMessage: 'Tool execution failed' }).message;
 
           parts[toolPartIndex] = {
             ...toolPart,
