@@ -477,6 +477,25 @@ export type MultiPrimitiveExecutionOptions<OUTPUT = undefined> = NetworkOptions<
  */
 export type PublicNetworkOptions<OUTPUT = undefined> = NetworkOptions<OUTPUT>;
 
+export type AgentRunLifecycleEvent =
+  | {
+      phase: 'start';
+      runId: string;
+      threadId?: string;
+      resourceId?: string;
+      resumed: boolean;
+      requestContext: RequestContext;
+    }
+  | {
+      phase: 'finish';
+      runId: string;
+      threadId?: string;
+      resourceId?: string;
+      outcome: 'success' | 'suspended' | 'failed' | 'canceled';
+      error?: unknown;
+      requestContext: RequestContext;
+    };
+
 export type AgentExecutionOptionsBase<OUTPUT> = {
   /** Custom instructions that override the agent's default instructions for this execution */
   instructions?: SystemMessage;
@@ -542,6 +561,8 @@ export type AgentExecutionOptionsBase<OUTPUT> = {
   onError?: LoopConfig<OUTPUT>['onError'];
   /** Callback fired when streaming is aborted */
   onAbort?: LoopConfig<OUTPUT>['onAbort'];
+  /** Callback fired at the authoritative start and terminal boundaries of an agent run. */
+  onRunLifecycle?: (event: AgentRunLifecycleEvent) => void | Promise<void>;
   /** Tools that are active for this execution */
   activeTools?: LoopOptions['activeTools'];
   /**

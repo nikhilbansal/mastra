@@ -65,6 +65,16 @@ export function createMapResultsStep<OUTPUT = undefined>({
 >['execute'] {
   return async ({ inputData, bail, ..._observabilityContext }) => {
     const memoryData = inputData['prepare-memory-step'];
+    const finishRun = (outcome: 'success' | 'suspended' | 'failed' | 'canceled', error?: unknown) =>
+      options.onRunLifecycle?.({
+        phase: 'finish',
+        runId,
+        threadId: memoryData.thread?.id ?? threadIdFromArgs,
+        resourceId,
+        outcome,
+        error,
+        requestContext,
+      });
 
     // Class instances written to runScope by upstream steps. These never travel
     // through inputData because the evented engine JSON-serializes step outputs.
@@ -149,6 +159,7 @@ export function createMapResultsStep<OUTPUT = undefined>({
           },
         });
 
+        await finishRun('success');
         return bail(modelOutput);
       } catch (error) {
         // End agent span with error and tripwire context so failures aren't masked
@@ -291,6 +302,7 @@ export function createMapResultsStep<OUTPUT = undefined>({
             // Without this, the span is orphaned and exporters that wait
             // for the root span to end (e.g. Datadog) never emit the trace.
             agentSpan?.error({ error, endSpan: true });
+            await finishRun('failed', error);
             return;
           }
 
@@ -303,6 +315,7 @@ export function createMapResultsStep<OUTPUT = undefined>({
                 toolCallId: payload.toolCallId,
               },
             });
+            await finishRun('suspended');
             return;
           }
 
@@ -313,6 +326,7 @@ export function createMapResultsStep<OUTPUT = undefined>({
                 reason: 'abort',
               },
             });
+            await finishRun('canceled');
             return;
           }
 
@@ -371,13 +385,19 @@ export function createMapResultsStep<OUTPUT = undefined>({
             agentSpan?.end();
           }
 
-          await options?.onFinish?.({
-            ...payload,
-            runId,
-            messages: messageList.get.response.aiV5.model(),
-            usage: payload.usage,
-            totalUsage: payload.totalUsage,
-          });
+          try {
+            await options?.onFinish?.({
+              ...payload,
+              runId,
+              messages: messageList.get.response.aiV5.model(),
+              usage: payload.usage,
+              totalUsage: payload.totalUsage,
+            });
+            await finishRun(aborted ? 'canceled' : 'success');
+          } catch (error) {
+            await finishRun('failed', error);
+            throw error;
+          }
         },
         onStepFinish: result.onStepFinish,
         onChunk: options.onChunk,

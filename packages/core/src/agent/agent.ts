@@ -7139,8 +7139,40 @@ export class Agent<
 
     const observabilityContext = createObservabilityContext({ currentSpan: agentSpan });
     const run = await executionWorkflow.createRun();
-    const result = await run.start({ requestContext, actor: options.actor, ...observabilityContext });
-    return result;
+    await options.onRunLifecycle?.({
+      phase: 'start',
+      runId,
+      threadId: threadFromArgs?.id,
+      resourceId,
+      resumed: Boolean(resumeContext),
+      requestContext,
+    });
+    try {
+      const result = await run.start({ requestContext, actor: options.actor, ...observabilityContext });
+      if (result.status === 'failed') {
+        await options.onRunLifecycle?.({
+          phase: 'finish',
+          runId,
+          threadId: threadFromArgs?.id,
+          resourceId,
+          outcome: 'failed',
+          error: result.error,
+          requestContext,
+        });
+      }
+      return result;
+    } catch (error) {
+      await options.onRunLifecycle?.({
+        phase: 'finish',
+        runId,
+        threadId: threadFromArgs?.id,
+        resourceId,
+        outcome: 'failed',
+        error,
+        requestContext,
+      });
+      throw error;
+    }
   }
 
   /**
