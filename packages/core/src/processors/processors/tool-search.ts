@@ -135,6 +135,14 @@ const TOOL_SEARCH_TOKENIZE_OPTIONS: TokenizeOptions = {
   splitPattern: /[\s\-_.,;:!?()[\]{}'"]+/,
 };
 
+function searchTerms(value: string): string[] {
+  return value
+    .replace(/([a-z0-9])([A-Z])/g, '$1 $2')
+    .toLowerCase()
+    .split(TOOL_SEARCH_TOKENIZE_OPTIONS.splitPattern!)
+    .filter(term => term.length > 1);
+}
+
 /**
  * Processor that enables dynamic tool discovery and loading.
  *
@@ -241,12 +249,12 @@ export class ToolSearchProcessor implements Processor<'tool-search'> {
     this.staticCatalog = buildToolCatalog(options.tools);
   }
 
-  /**
-   * Get the thread ID from the request context, or undefined when no thread is active.
-   * Both stores tolerate an undefined thread ID.
-   */
+  /** Get the active thread ID from the request or its native message list. */
   private getThreadId(args: ProcessInputStepArgs): string | undefined {
-    return (args.requestContext?.get(MASTRA_THREAD_ID_KEY) as string | undefined) || undefined;
+    return (
+      (args.requestContext?.get(MASTRA_THREAD_ID_KEY) as string | undefined) ??
+      args.messageList.serialize().memoryInfo?.threadId
+    );
   }
 
   private makeStoreContext(args: ProcessInputStepArgs): LoadedToolStoreContext {
@@ -440,23 +448,20 @@ export class ToolSearchProcessor implements Processor<'tool-search'> {
   ): Promise<SearchResult[]> {
     if (catalog.index.size === 0) return [];
 
-    // Get BM25 results (request more than topK to allow for re-ranking after boosting).
-    // When filtering is enabled, inspect every BM25 match so denied high-ranking tools
-    // do not prevent lower-ranking allowed tools from filling the result set.
-    const searchLimit = this.filter ? catalog.index.size : this.searchConfig.topK * 2;
-    const bm25Results = catalog.index.search(query, searchLimit, 0);
+    // Name boosts and request filters must run before candidates are truncated.
+    const bm25Results = catalog.index.search(query, catalog.index.size, 0);
 
     if (bm25Results.length === 0) return [];
 
     // Apply name-match boosting on top of BM25 scores
-    const queryTokens = query
-      .toLowerCase()
-      .split(/[\s\-_.,;:!?()[\]{}'"]+/)
-      .filter(t => t.length > 1);
+    const queryTokens = searchTerms(query);
 
     const boostedResults = bm25Results.map(result => {
       let score = result.score;
       const nameLower = result.id.toLowerCase();
+      const nameTokens = searchTerms(result.id);
+
+      if (nameTokens.every(term => queryTokens.includes(term))) score += 5;
 
       for (const term of queryTokens) {
         if (nameLower === term) {

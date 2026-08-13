@@ -64,12 +64,13 @@ function extractActivatedNames(result: unknown): string[] {
  * Scans conversation messages for completed `search_tools` / `load_tool` invocations
  * and unions the tool names they activated.
  */
-export function deriveLoadedNamesFromMessages(args: ProcessInputStepArgs): Set<string> {
+export function deriveLoadedNamesFromMessages(args: ProcessInputStepArgs, threadId?: string): Set<string> {
   const loaded = new Set<string>();
 
   if (!Array.isArray(args.messages)) return loaded;
 
   for (const message of args.messages) {
+    if (threadId && message.threadId && message.threadId !== threadId) continue;
     const parts = message.content?.parts;
     if (!parts) continue;
 
@@ -112,7 +113,7 @@ export class ContextLoadedToolStore implements LoadedToolStore {
   private supplemental = new Map<string, Set<string>>();
 
   getLoadedNames(ctx: LoadedToolStoreContext): Set<string> {
-    const fromMessages = ctx.args ? deriveLoadedNamesFromMessages(ctx.args) : new Set<string>();
+    const fromMessages = ctx.args ? deriveLoadedNamesFromMessages(ctx.args, ctx.threadId) : new Set<string>();
 
     if (!ctx.threadId) return fromMessages;
 
