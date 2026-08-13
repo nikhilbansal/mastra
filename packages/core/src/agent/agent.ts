@@ -8960,13 +8960,13 @@ export class Agent<
     }
 
     const pubsub = this.getPubSub();
-    const hasLocalRun = agentThreadStreamRuntime.hasThreadRun(runId, pubsub);
     let resumableRun = agentThreadStreamRuntime.getResumableThreadRun(
       { threadId, resourceId, runId, toolCallId },
       pubsub,
     );
+    const resumeLocally = Boolean(resumableRun);
 
-    if (!resumableRun && !hasLocalRun) {
+    if (!resumableRun) {
       // The thread runtime only tracks runs seen by this process. Recover the
       // explicitly targeted run from snapshot storage after a restart or when
       // the resume request reaches another server instance.
@@ -9008,7 +9008,7 @@ export class Agent<
     await agentThreadStreamRuntime.queueStreamResume(
       runId,
       async () => {
-        const queuedResumableRun = hasLocalRun
+        const queuedResumableRun = resumeLocally
           ? agentThreadStreamRuntime.getResumableThreadRun(
               { threadId, resourceId, runId, toolCallId: resumableRun.toolCallId },
               this.getPubSub(),
@@ -9027,6 +9027,10 @@ export class Agent<
               agentName: this.name,
             },
           });
+        }
+
+        if (!resumeLocally) {
+          this.#mastra?.__resetRunScope(runId);
         }
 
         return this.resumeStream(resumeData, {

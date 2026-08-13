@@ -3420,6 +3420,12 @@ export class Mastra<
     return this.#runScopes.get(runId);
   }
 
+  __resetRunScope(runId: string): void {
+    if (this.#runScopes.has(runId)) {
+      this.#runScopes.set(runId, createRunScope());
+    }
+  }
+
   /**
    * Idempotently allocate a runScope for a runId. Used by call sites (like
    * `loop()`) that need to populate the scope *before* the internal workflow
