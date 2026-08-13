@@ -285,6 +285,8 @@ export interface AgentControllerSessionState {
   modelId: string;
   /** Whether the agent is currently executing a run (for initial UI hydration). */
   running?: boolean;
+  /** Current task list for initial hydration and reconnect recovery. */
+  tasks?: AgentControllerTaskSnapshot[];
   /** OM progress snapshot for the status line (initial hydration). */
   omProgress?: AgentControllerOMProgress;
   /** Cumulative token usage for the current thread. */

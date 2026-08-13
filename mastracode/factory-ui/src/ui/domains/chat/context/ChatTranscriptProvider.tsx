@@ -97,6 +97,7 @@ function ChatTranscriptValueProvider({
   const effectiveTranscript: TranscriptState = {
     ...transcript,
     threadId: transcript.threadId ?? threadId ?? connection.createdThreadId,
+    tasks: connection.state?.tasks ?? transcript.tasks,
     omProgress: transcript.omProgress ?? connection.state?.omProgress,
     usage: transcript.usage ?? connection.state?.tokenUsage,
   };
