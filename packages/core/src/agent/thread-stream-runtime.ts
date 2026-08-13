@@ -1092,7 +1092,7 @@ export class AgentThreadStreamRuntime {
       output: outputForSubscribers,
       createSubscriberStream,
       startBroadcast,
-      waitForBroadcast,
+      broadcastFinished,
     } = this.#withBroadcastStream(output, pubsub, key, streamId);
     const record: AgentThreadRunRecord<any> = {
       agent: { id: `thread-event:${runId}` } as Agent<any, any, any, any>,
@@ -1105,27 +1105,21 @@ export class AgentThreadStreamRuntime {
       resourceId: options.resourceId ?? '',
       streamOptions: {},
       createSubscriberStream,
+      broadcastFinished,
     };
 
     state.threadRunsById.set(runId, record);
     state.threadRunsByStreamId.set(streamId, record);
     state.threadKeysByRunId.set(runId, key);
     const registered = this.#publishAndWait(pubsub, key, { type: 'run-registered', runId, streamId, streamSeq });
-    record.waitForBroadcast = async () => {
-      await registered.catch(() => {});
-      await waitForBroadcast();
-    };
     void registered.then(startBroadcast, startBroadcast);
-    void outputForSubscribers._waitUntilFinished().finally(() => {
-      void (async () => {
-        await record.waitForBroadcast?.();
-        state.threadRunsByStreamId.delete(streamId);
-        if (state.threadRunsById.get(runId) === record) {
-          state.threadRunsById.delete(runId);
-          state.threadKeysByRunId.delete(runId);
-        }
-        await this.#publishAndWait(pubsub, key, { type: 'run-completed', runId, streamId }).catch(() => {});
-      })();
+    void Promise.allSettled([outputForSubscribers._waitUntilFinished(), broadcastFinished]).then(() => {
+      state.threadRunsByStreamId.delete(streamId);
+      if (state.threadRunsById.get(runId) === record) {
+        state.threadRunsById.delete(runId);
+        state.threadKeysByRunId.delete(runId);
+      }
+      void this.#publishAndWait(pubsub, key, { type: 'run-completed', runId, streamId }).catch(() => {});
     });
   }
 
