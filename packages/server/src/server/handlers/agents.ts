@@ -2713,6 +2713,15 @@ export const SEND_TOOL_APPROVAL_ROUTE = createRoute({
         threadId: params.threadId,
       });
 
+      await runAgentDispatchAdmission({
+        mastra,
+        agentId,
+        requestContext: serverRequestContext,
+        runId: params.toolCallId,
+        resourceId: effectiveResourceId,
+        threadId: effectiveThreadId,
+      });
+
       return await agent.sendToolApproval({
         ...params,
         ...(normalizedStreamOptions ? { streamOptions: normalizedStreamOptions } : {}),
