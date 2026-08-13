@@ -506,6 +506,7 @@ export const useChat = ({
           void subscription
             .processDataStream({
               onChunk: chunk => processStreamChunk(chunk),
+              reconnect: true,
             })
             .catch(error => {
               if (!isAbortError(error)) {
