@@ -1816,6 +1816,7 @@ export class AgentThreadStreamRuntime {
     let timer: ReturnType<typeof setTimeout> | undefined;
     let subscribed = false;
     let settled = false;
+    let leaseExpired = false;
     let resolveWait!: () => void;
     const wait = new Promise<void>(resolve => {
       resolveWait = resolve;
@@ -1844,6 +1845,7 @@ export class AgentThreadStreamRuntime {
       const owner = await provider.getLeaseOwner(key).catch(() => undefined);
       if (settled) return;
       if (owner !== runId) {
+        leaseExpired = true;
         clearRemoteActive();
         finish();
         return;
@@ -1882,6 +1884,7 @@ export class AgentThreadStreamRuntime {
       if (timer) clearTimeout(timer);
       if (subscribed) await resolvedPubSub.unsubscribe(topic, onEvent).catch(() => {});
     }
+    return leaseExpired;
   }
 
   async subscribeToThread<OUTPUT = unknown>(
@@ -1944,10 +1947,10 @@ export class AgentThreadStreamRuntime {
         pull(controller) {
           const drain = () => {
             if (remoteRun.closed) return;
-            while (remoteRun.parts.length > 0) {
+            while (!remoteRun.closed && remoteRun.parts.length > 0) {
               controller.enqueue(remoteRun.parts.shift());
             }
-            if (remoteRun.done) {
+            if (remoteRun.done && !remoteRun.closed) {
               remoteRun.closed = true;
               controller.close();
             }
@@ -2053,6 +2056,28 @@ export class AgentThreadStreamRuntime {
       if (state.remoteThreadKeysByRunId.get(runId) === key) state.remoteThreadKeysByRunId.delete(runId);
     };
 
+    const watchedRemoteStreams = new Set<string>();
+    const watchRemoteRun = (runId: string, streamId: string) => {
+      if (watchedRemoteStreams.has(streamId)) return;
+      watchedRemoteStreams.add(streamId);
+      void this.#waitForRemoteRunToFinish(resolvedPubSub, key, runId).then(leaseExpired => {
+        watchedRemoteStreams.delete(streamId);
+        const remoteRun = remoteRuns.get(streamId);
+        if (!leaseExpired || done || !remoteRun || remoteRun.done) return;
+        remoteRun.parts.push({
+          type: 'error',
+          payload: { error: 'Agent run stopped before completion.' },
+        });
+        remoteRun.done = true;
+        while (remoteRun.waiters.length) remoteRun.waiters.shift()?.();
+        while (remoteRun.finishWaiters.length) remoteRun.finishWaiters.shift()?.();
+        remoteRuns.delete(streamId);
+        seenStreamIds.delete(streamId);
+        clearActiveIfCurrent(runId, streamId);
+        wake();
+      });
+    };
+
     const handleEvent = async (event: Parameters<EventCallback>[0]) => {
       if (done) return;
       const data = event.data as AgentThreadStreamRuntimeEvent | undefined;
@@ -2090,6 +2115,7 @@ export class AgentThreadStreamRuntime {
         if (live) {
           deferredRunsByStreamId.delete(data.streamId);
           enqueueRun(record);
+          if (!local) watchRemoteRun(data.runId, data.streamId);
         } else {
           // Replayed run from a retained backend with no live owner: buffer it
           // until its terminal event proves it completed cleanly.
@@ -2126,6 +2152,7 @@ export class AgentThreadStreamRuntime {
           const record = createRemoteRun(data.runId, data.streamId, state.streamSeqByRunId.get(data.runId) ?? 1);
           if (await this.#hasLiveThreadLease(resolvedPubSub, key, data.runId)) {
             enqueueRun(record);
+            watchRemoteRun(data.runId, data.streamId);
           } else {
             deferredRunsByStreamId.set(data.streamId, record);
           }
@@ -2273,6 +2300,7 @@ export class AgentThreadStreamRuntime {
         deferredRunsByStreamId.set(active.streamId, record);
         syntheticStartStreamIds.add(active.streamId);
         enqueueRun(record);
+        watchRemoteRun(active.runId, active.streamId);
       }
     }
 
