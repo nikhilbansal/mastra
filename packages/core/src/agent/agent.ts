@@ -9088,11 +9088,6 @@ export class Agent<
     }
 
     let runId = this.getActiveThreadRunId({ threadId, resourceId });
-    // Tracks whether runId was recovered from storage (not the in-memory active-run
-    // map). This path resumes directly because the snapshot has already been
-    // discovered here, avoiding a second storage lookup in sendStreamResume().
-    let resolvedFromStorage = false;
-
     if (!runId) {
       // The in-memory active-run map only knows about runs started by this process.
       // After a server restart (or on another instance) fall back to storage-backed
@@ -9129,9 +9124,7 @@ export class Agent<
           },
         });
       }
-
       runId = matchingRuns[0]?.runId;
-      resolvedFromStorage = runId !== undefined;
     }
 
     if (!runId) {
@@ -9171,19 +9164,6 @@ export class Agent<
         resource: resumeOptions.memory?.resource ?? resourceId,
       },
     };
-
-    if (resolvedFromStorage) {
-      // Resume directly from the persisted snapshot, mirroring the explicit-runId
-      // approveToolCall()/declineToolCall() entry points.
-      // @ts-expect-error - resumeStream overloads don't narrow cleanly here; matches
-      // the same pattern used by approveToolCall()/declineToolCall() above.
-      await this.resumeStream(resumeData, {
-        ...resumeStreamOptions,
-        runId,
-        ...(options.toolCallId ? { toolCallId: options.toolCallId } : {}),
-      });
-      return { accepted: true, runId, toolCallId: options.toolCallId };
-    }
 
     return this.sendStreamResume({
       threadId,
