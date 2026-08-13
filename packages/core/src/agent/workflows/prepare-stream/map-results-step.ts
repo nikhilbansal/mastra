@@ -333,9 +333,7 @@ export function createMapResultsStep<OUTPUT = undefined>({
           // Skip memory persistence when the abort signal has fired.
           // The LLM response may have continued after the caller disconnected,
           // and we should not persist a partial or full response for an aborted request.
-          const aborted = options.abortSignal?.aborted;
-
-          if (!aborted) {
+          if (!options.abortSignal?.aborted) {
             try {
               const outputText =
                 options.structuredOutput?.schema && payload.object != null
@@ -393,7 +391,7 @@ export function createMapResultsStep<OUTPUT = undefined>({
               usage: payload.usage,
               totalUsage: payload.totalUsage,
             });
-            await finishRun(aborted ? 'canceled' : 'success');
+            await finishRun(options.abortSignal?.aborted ? 'canceled' : 'success');
           } catch (error) {
             await finishRun('failed', error);
             throw error;
