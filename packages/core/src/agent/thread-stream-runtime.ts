@@ -274,6 +274,47 @@ export class AgentThreadStreamRuntime {
     return { provider, isFallback: provider === NoopLeaseProvider };
   }
 
+  #activeStreamLeaseKey(key: string): string {
+    return `${key}${AGENT_THREAD_KEY_SEPARATOR}active-stream`;
+  }
+
+  #activeStreamLeaseOwner(runId: string, streamId: string): string {
+    return JSON.stringify([runId, streamId]);
+  }
+
+  #parseActiveStreamLeaseOwner(owner?: string): { runId: string; streamId: string } | undefined {
+    if (!owner) return;
+    try {
+      const value = JSON.parse(owner);
+      if (!Array.isArray(value) || typeof value[0] !== 'string' || typeof value[1] !== 'string') return;
+      return { runId: value[0], streamId: value[1] };
+    } catch {
+      return;
+    }
+  }
+
+  async #acquireActiveStreamLease(pubsub: PubSub, key: string, runId: string, streamId: string): Promise<void> {
+    await this.#getLeaseProvider(pubsub)
+      .acquireLease(
+        this.#activeStreamLeaseKey(key),
+        this.#activeStreamLeaseOwner(runId, streamId),
+        AGENT_THREAD_LEASE_TTL_MS,
+      )
+      .catch(() => {});
+  }
+
+  async #releaseActiveStreamLease(
+    pubsub: PubSub | undefined,
+    key: string,
+    runId: string,
+    streamId: string,
+  ): Promise<void> {
+    const resolved = this.#getPubSub(pubsub);
+    await this.#getLeaseProvider(resolved)
+      .releaseLease(this.#activeStreamLeaseKey(key), this.#activeStreamLeaseOwner(runId, streamId))
+      .catch(() => {});
+  }
+
   async #hasLiveThreadLease(pubsub: PubSub, key: string, runId: string): Promise<boolean> {
     const { provider, isFallback } = this.#resolveLeaseProvider(pubsub);
     if (isFallback) return true;
@@ -324,7 +365,18 @@ export class AgentThreadStreamRuntime {
             // If renewLease reports the lease is gone, stop renewing; the current stream may still finish,
             // but another process can now claim the thread until this run completes or errors.
             this.#stopLeaseRenewal(pubsub, runId);
+            return;
           }
+          const streamId =
+            state.activeThreadRunIds.get(key) === runId ? state.activeThreadStreamIds.get(key) : undefined;
+          if (!streamId) return;
+          void leaseProvider
+            .acquireLease(
+              this.#activeStreamLeaseKey(key),
+              this.#activeStreamLeaseOwner(runId, streamId),
+              AGENT_THREAD_LEASE_TTL_MS,
+            )
+            .catch(() => {});
         })
         .catch(() => {});
     }, AGENT_THREAD_LEASE_RENEW_INTERVAL_MS);
@@ -767,8 +819,10 @@ export class AgentThreadStreamRuntime {
     const key = state.threadKeysByRunId.get(runId);
     if (key) {
       const streamId = state.activeThreadRunIds.get(key) === runId ? state.activeThreadStreamIds.get(key) : undefined;
-      this.#releaseThreadLease(pubsub, key, runId);
-      this.#publish(pubsub, key, { type: 'run-aborted', runId, streamId });
+      void (streamId ? this.#releaseActiveStreamLease(pubsub, key, runId, streamId) : Promise.resolve()).then(() => {
+        this.#releaseThreadLease(pubsub, key, runId);
+        this.#publish(pubsub, key, { type: 'run-aborted', runId, streamId });
+      });
     }
 
     return true;
@@ -1253,6 +1307,7 @@ export class AgentThreadStreamRuntime {
         .acquireLease(key, output.runId, AGENT_THREAD_LEASE_TTL_MS)
         .catch(() => ({ acquired: true as boolean }));
       if (lease.acquired) this.#startLeaseRenewal(resolvedPubSub, key, output.runId);
+      await this.#acquireActiveStreamLease(resolvedPubSub, key, output.runId, streamId);
       await this.#publishAndWait(pubsub, key, {
         type: 'run-registered',
         runId: output.runId,
@@ -1289,7 +1344,7 @@ export class AgentThreadStreamRuntime {
     // which subscribers cannot reconcile (and would release a lease that is
     // still being acquired).
     const finished = record.output._waitUntilFinished();
-    void Promise.allSettled(registered ? [finished, registered] : [finished]).then(() => {
+    void Promise.allSettled(registered ? [finished, registered] : [finished]).then(async () => {
       state.watchedThreadStreamIds.delete(record.streamId);
       this.#cleanupPreparedRun(state, record.runId);
 
@@ -1301,6 +1356,8 @@ export class AgentThreadStreamRuntime {
         // — it is simply no longer retained for the life of the process. Mirrors the
         // internal-workflow registry, which already bounds parked runs this way.
         record.suspendedAt = Date.now();
+        await Promise.resolve(record.broadcastFinished);
+        await this.#releaseActiveStreamLease(pubsub, key, record.runId, record.streamId);
         this.#publish(pubsub, key, { type: 'run-suspended', runId: record.runId, streamId: record.streamId });
         return;
       }
@@ -1334,7 +1391,8 @@ export class AgentThreadStreamRuntime {
       // parts. The stream has already ended here (the run is terminal, not
       // suspended), so the broadcast pump is guaranteed to settle. Local state
       // cleanup above stays immediate.
-      void Promise.resolve(record.broadcastFinished).then(() => {
+      void Promise.resolve(record.broadcastFinished).then(async () => {
+        await this.#releaseActiveStreamLease(pubsub, key, record.runId, record.streamId);
         this.#publish(pubsub, key, {
           type: 'run-completed',
           runId: record.runId,
@@ -1930,6 +1988,7 @@ export class AgentThreadStreamRuntime {
 
     const localStreamIds = new Set<string>();
     const replayedStreamIds = new Set<string>();
+    const syntheticStartStreamIds = new Set<string>();
     // Replayed runs whose origin no longer holds the thread lease (the run is
     // terminal or its process died). Their parts are buffered instead of being
     // yielded live: a retained backend replays every run's chunks to a fresh
@@ -2044,6 +2103,13 @@ export class AgentThreadStreamRuntime {
           data.sourceId === this.#id &&
           (localStreamIds.has(data.streamId) || !replayedStreamIds.has(data.streamId))
         ) {
+          return;
+        }
+        if (
+          (data.part as { type?: string } | undefined)?.type === 'start' &&
+          syntheticStartStreamIds.has(data.streamId)
+        ) {
+          syntheticStartStreamIds.delete(data.streamId);
           return;
         }
         if (
@@ -2192,6 +2258,23 @@ export class AgentThreadStreamRuntime {
     };
 
     await resolvedPubSub.subscribe(topic, onEvent, { start: 'latest' });
+
+    if (!activeRunId()) {
+      const owner = await this.#getLeaseProvider(resolvedPubSub)
+        .getLeaseOwner(this.#activeStreamLeaseKey(key))
+        .catch(() => undefined);
+      const active = this.#parseActiveStreamLeaseOwner(owner);
+      if (active) {
+        state.activeThreadRunIds.set(key, active.runId);
+        state.activeThreadStreamIds.set(key, active.streamId);
+        state.remoteThreadKeysByRunId.set(active.runId, key);
+        const record = createRemoteRun(active.runId, active.streamId, 1);
+        remoteRuns.get(active.streamId)?.parts.push({ type: 'start', runId: active.runId });
+        deferredRunsByStreamId.set(active.streamId, record);
+        syntheticStartStreamIds.add(active.streamId);
+        enqueueRun(record);
+      }
+    }
 
     const currentRunId = activeRunId();
     const currentRecord = currentRunId ? state.threadRunsById.get(currentRunId) : undefined;
