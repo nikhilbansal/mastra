@@ -596,6 +596,48 @@ user-invocable: false
       expect(readdirMock.mock.calls.length - callsAfterInit).toBe(1);
     });
 
+    it('a paths-changed maybeRefresh coalesced onto an in-flight refresh still discovers the new paths', async () => {
+      const filesystem = createMockFilesystem({
+        'skills/path-a/skill-a/SKILL.md': VALID_SKILL_MD.replace('test-skill', 'skill-a'),
+        'skills/path-b/skill-b/SKILL.md': VALID_SKILL_MD.replace('test-skill', 'skill-b'),
+      });
+
+      let currentPath = 'skills/path-a';
+      const skills = new WorkspaceSkillsImpl({
+        source: filesystem,
+        skills: () => [currentPath],
+      });
+
+      expect((await skills.list()).map(s => s.name)).toEqual(['skill-a']);
+
+      // Gate the source so a refresh started with the OLD paths hangs mid-walk
+      let release!: () => void;
+      const gate = new Promise<void>(resolve => {
+        release = resolve;
+      });
+      const originalReaddir = filesystem.readdir;
+      let gated = true;
+      filesystem.readdir = vi.fn(async (path: string) => {
+        if (gated) await gate;
+        return originalReaddir(path);
+      });
+
+      const staleRefresh = skills.refresh();
+      await new Promise(resolve => setTimeout(resolve, 10));
+
+      // Paths change while that rebuild is in flight; this maybeRefresh
+      // coalesces onto it and must NOT be satisfied by the stale-path walk
+      currentPath = 'skills/path-b';
+      const pathsChangedRefresh = skills.maybeRefresh();
+      await new Promise(resolve => setTimeout(resolve, 10));
+
+      gated = false;
+      release();
+      await Promise.all([staleRefresh, pathsChangedRefresh]);
+
+      expect((await skills.list()).map(s => s.name)).toEqual(['skill-b']);
+    });
+
     it('concurrent maybeRefresh calls share one staleness walk', async () => {
       const filesystem = createMockFilesystem({
         'skills/skill-a/SKILL.md': VALID_SKILL_MD.replace('test-skill', 'skill-a'),

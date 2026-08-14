@@ -127,9 +127,9 @@ export class WorkspaceSkillsImpl implements WorkspaceSkills {
   static readonly GLOB_RESOLVE_INTERVAL = 5_000; // Re-walk glob dirs every 5s
   // Staleness walks issue a stat/readdir per skill root and a stat per skill
   // directory; over remote sandbox filesystems each of those is a network
-  // round-trip costing hundreds of milliseconds. 30s bounds how often the
-  // background revalidation pays that walk. Skill tools still force a check
-  // on explicit activation, so hot reload stays exact where it matters.
+  // round-trip costing hundreds of milliseconds. 30s bounds how often any
+  // caller (turn-boundary processors and skill tools alike) pays that walk,
+  // so skill edits are picked up within at most 30s of the last check.
   static readonly STALENESS_CHECK_COOLDOWN = 30_000;
 
   /** In-flight refresh, shared by concurrent refresh() callers */
@@ -377,14 +377,22 @@ export class WorkspaceSkillsImpl implements WorkspaceSkills {
   async refresh(): Promise<void> {
     this.#assertAvailable?.();
 
-    // Coalesce concurrent refresh() calls onto one in-flight rebuild
+    // Coalesce concurrent refresh() calls onto one in-flight rebuild.
+    // Invariant: #refreshPromise is never non-null-and-satisfied - the
+    // success path clears it synchronously inside #doRefresh, so a caller
+    // arriving in the settle microtask gap starts a fresh rebuild instead of
+    // coalescing onto one that may have used stale paths.
     if (this.#refreshPromise) {
       return this.#refreshPromise;
     }
-    this.#refreshPromise = this.#doRefresh().finally(() => {
-      this.#refreshPromise = null;
+    const inFlight = this.#doRefresh().finally(() => {
+      // Rejection path only; the success path already cleared it.
+      if (this.#refreshPromise === inFlight) {
+        this.#refreshPromise = null;
+      }
     });
-    return this.#refreshPromise;
+    this.#refreshPromise = inFlight;
+    return inFlight;
   }
 
   /**
@@ -397,15 +405,32 @@ export class WorkspaceSkillsImpl implements WorkspaceSkills {
    * holds workspace content and cannot be rebuilt wholesale).
    */
   async #doRefresh(): Promise<void> {
-    const newSkills = new Map<string, InternalSkill[]>();
-    await this.#discoverSkills(newSkills);
+    // Loop: a coalesced maybeRefresh may swap #resolvedPaths while a rebuild
+    // is in flight (the in-flight walk captured the old paths). Re-run the
+    // rebuild until the paths it used are still current at completion, so a
+    // paths-changed caller is never satisfied by a stale-path rebuild.
+    for (;;) {
+      const pathsAtStart = this.#resolvedPaths;
+      const newSkills = new Map<string, InternalSkill[]>();
+      await this.#discoverSkills(newSkills);
 
-    // Snapshot the currently indexed skills just before the swap
-    const oldSkills = this.#skills;
-    this.#skills = newSkills;
-    this.#initialized = true;
+      // Snapshot the currently indexed skills just before the swap
+      const oldSkills = this.#skills;
+      this.#skills = newSkills;
+      this.#initialized = true;
 
-    await this.#reconcileIndex(oldSkills, newSkills);
+      await this.#reconcileIndex(oldSkills, newSkills);
+
+      if (this.#resolvedPaths === pathsAtStart) {
+        // Clear the coalescing handle in the same synchronous step as the
+        // success decision. If this waited for the wrapper's .finally (one
+        // microtask after settle), a paths-changed refresh() landing in that
+        // gap would coalesce onto this already-finished rebuild and its new
+        // paths would never be discovered.
+        this.#refreshPromise = null;
+        return;
+      }
+    }
   }
 
   /**
