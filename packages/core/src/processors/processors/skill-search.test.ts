@@ -172,6 +172,44 @@ describe('SkillSearchProcessor', () => {
         'tools.search_skills',
       );
     });
+
+    it('awaits maybeRefresh before step 0 when blockingRefresh is enabled', async () => {
+      const workspace = createMockWorkspace(testSkills);
+      // Gated maybeRefresh: the step must not complete until it resolves
+      let releaseRefresh!: () => void;
+      workspace.skills.maybeRefresh = vi.fn().mockReturnValue(
+        new Promise<void>(resolve => {
+          releaseRefresh = resolve;
+        }),
+      );
+
+      const processor = new SkillSearchProcessor({ workspace, blockingRefresh: true });
+
+      let stepDone = false;
+      const stepP = processor.processInputStep(createMockArgs('thread-1')).then(result => {
+        stepDone = true;
+        return result;
+      });
+
+      await new Promise(resolve => setTimeout(resolve, 20));
+      expect(stepDone).toBe(false);
+
+      releaseRefresh();
+      const result = await stepP;
+      expect(stepDone).toBe(true);
+      expect(result.tools).toHaveProperty('search_skills');
+    });
+
+    it('does not fail the step when maybeRefresh rejects under blockingRefresh', async () => {
+      const workspace = createMockWorkspace(testSkills);
+      workspace.skills.maybeRefresh = vi.fn().mockRejectedValue(new Error('sandbox unreachable'));
+
+      const processor = new SkillSearchProcessor({ workspace, blockingRefresh: true });
+
+      await expect(processor.processInputStep(createMockArgs('thread-1'))).resolves.toHaveProperty(
+        'tools.search_skills',
+      );
+    });
   });
 
   describe('search_skills', () => {

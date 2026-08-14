@@ -51,6 +51,15 @@ interface SkillsProcessorBaseOptions {
    * by name.
    */
   formatLocation?: (skill: Skill) => string;
+  /**
+   * When true, the processor awaits the skills staleness check and refresh
+   * before the first step, so the injected catalog reflects disk (subject to
+   * the staleness cooldown). Defaults to false: the turn serves the cached
+   * catalog and revalidates in the background, so mid-session skill changes
+   * appear one turn later. Enable this only when same-turn freshness matters
+   * more than turn latency (e.g. local filesystems where the walk is cheap).
+   */
+  blockingRefresh?: boolean;
 }
 
 /**
@@ -83,10 +92,14 @@ export class SkillsProcessor implements Processor<'skills-processor'> {
   /** Optional override for rendering the location field */
   private readonly _formatLocation: ((skill: Skill) => string) | undefined;
 
+  /** When true, await the staleness check before step 0 (same-turn freshness) */
+  private readonly _blockingRefresh: boolean;
+
   constructor(opts: SkillsProcessorOptions) {
     this._skills = 'skills' in opts && opts.skills ? opts.skills : opts.workspace?.skills;
     this._format = opts.format ?? 'xml';
     this._formatLocation = opts.formatLocation;
+    this._blockingRefresh = opts.blockingRefresh ?? false;
   }
 
   /**
@@ -228,12 +241,17 @@ ${skillsMd}`;
     const skills = this._skills?.getScoped ? await this._skills.getScoped({ requestContext }) : this._skills;
 
     // Revalidate skills on first step only (not every step in the agentic loop).
-    // Fire-and-forget: the staleness walk can cost seconds of filesystem I/O
-    // over remote sandboxes, so the turn serves the cached catalog below while
-    // the walk runs in the background. Swallow rejections - an unhandled
-    // rejection in a processor can kill the process.
+    // Fire-and-forget by default: the staleness walk can cost seconds of
+    // filesystem I/O over remote sandboxes, so the turn serves the cached
+    // catalog below while the walk runs in the background. Swallow rejections -
+    // an unhandled rejection in a processor can kill the process. With
+    // blockingRefresh the walk is awaited so the catalog reflects disk.
     if (stepNumber === 0) {
-      void skills?.maybeRefresh({ requestContext })?.catch(() => {});
+      if (this._blockingRefresh) {
+        await skills?.maybeRefresh({ requestContext })?.catch(() => {});
+      } else {
+        void skills?.maybeRefresh({ requestContext })?.catch(() => {});
+      }
     }
     const skillsList = await skills?.list();
     const hasSkills = skillsList && skillsList.length > 0;

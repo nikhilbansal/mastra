@@ -399,6 +399,64 @@ describe('SkillsProcessor', () => {
       ).resolves.not.toThrow();
     });
 
+    it('awaits maybeRefresh before step 0 when blockingRefresh is enabled', async () => {
+      // Gated maybeRefresh: the step must not complete until it resolves
+      let releaseRefresh!: () => void;
+      let refreshResolved = false;
+      const gatedSkills = {
+        ...createMockWorkspaceSkills(),
+        maybeRefresh: vi.fn().mockReturnValue(
+          new Promise<void>(resolve => {
+            releaseRefresh = () => {
+              refreshResolved = true;
+              resolve();
+            };
+          }),
+        ),
+      };
+      const workspace = createMockWorkspace(gatedSkills);
+      const proc = new SkillsProcessor({ workspace, blockingRefresh: true });
+
+      let stepDone = false;
+      const stepP = proc
+        .processInputStep({
+          messageList: mockMessageList as any,
+          tools: {},
+          stepNumber: 0,
+          requestContext: {},
+        } as any)
+        .then(() => {
+          stepDone = true;
+        });
+
+      // Give the step a chance to (incorrectly) complete without the refresh
+      await new Promise(resolve => setTimeout(resolve, 20));
+      expect(stepDone).toBe(false);
+
+      releaseRefresh();
+      await stepP;
+      expect(refreshResolved).toBe(true);
+      expect(stepDone).toBe(true);
+    });
+
+    it('does not fail the step when maybeRefresh rejects under blockingRefresh', async () => {
+      const rejectingSkills = {
+        ...createMockWorkspaceSkills(),
+        maybeRefresh: vi.fn().mockRejectedValue(new Error('sandbox unreachable')),
+      };
+      const workspace = createMockWorkspace(rejectingSkills);
+      const proc = new SkillsProcessor({ workspace, blockingRefresh: true });
+
+      await expect(
+        proc.processInputStep({
+          messageList: mockMessageList as any,
+          tools: {},
+          stepNumber: 0,
+          requestContext: {},
+        } as any),
+      ).resolves.not.toThrow();
+    });
+
     it('should sort skills by name for deterministic output', async () => {
       // Mock skills in reverse alphabetical order
       const reverseSkills = {

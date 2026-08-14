@@ -72,6 +72,16 @@ export interface SkillSearchProcessorOptions {
    * @default 3600000 (1 hour)
    */
   ttl?: number;
+
+  /**
+   * When true, the processor awaits the skills staleness check and refresh
+   * before the first step, so search results reflect disk (subject to the
+   * staleness cooldown). Defaults to false: the turn proceeds on the cached
+   * catalog and revalidates in the background, so mid-session skill changes
+   * appear one turn later. Enable this only when same-turn freshness matters
+   * more than turn latency (e.g. local filesystems where the walk is cheap).
+   */
+  blockingRefresh?: boolean;
 }
 
 /**
@@ -94,6 +104,8 @@ export class SkillSearchProcessor implements Processor<'skill-search'> {
   private readonly workspace: Workspace;
   private readonly searchConfig: { topK: number; minScore: number };
   private readonly ttl: number;
+  /** When true, await the staleness check before step 0 (same-turn freshness) */
+  private readonly blockingRefresh: boolean;
   private cleanupIntervalId?: ReturnType<typeof setInterval>;
 
   /**
@@ -109,6 +121,7 @@ export class SkillSearchProcessor implements Processor<'skill-search'> {
       minScore: options.search?.minScore ?? 0,
     };
     this.ttl = options.ttl ?? 3600000; // Default: 1 hour
+    this.blockingRefresh = options.blockingRefresh ?? false;
 
     if (this.ttl > 0) {
       this.scheduleCleanup();
@@ -257,13 +270,18 @@ export class SkillSearchProcessor implements Processor<'skill-search'> {
       ? await configuredSkills.getScoped({ requestContext: args.requestContext })
       : configuredSkills;
 
-    // Revalidate skills on first step only. Fire-and-forget: the staleness
-    // walk can cost seconds of filesystem I/O over remote sandboxes, so the
-    // turn proceeds on the cached catalog while the walk runs in the
+    // Revalidate skills on first step only. Fire-and-forget by default: the
+    // staleness walk can cost seconds of filesystem I/O over remote sandboxes,
+    // so the turn proceeds on the cached catalog while the walk runs in the
     // background. Swallow rejections - an unhandled rejection in a processor
-    // can kill the process.
+    // can kill the process. With blockingRefresh the walk is awaited so
+    // search results reflect disk.
     if (args.stepNumber === 0) {
-      void skills.maybeRefresh({ requestContext: args.requestContext })?.catch(() => {});
+      if (this.blockingRefresh) {
+        await skills.maybeRefresh({ requestContext: args.requestContext })?.catch(() => {});
+      } else {
+        void skills.maybeRefresh({ requestContext: args.requestContext })?.catch(() => {});
+      }
     }
 
     // Add system instruction about the meta-tools
