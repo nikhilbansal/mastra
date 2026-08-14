@@ -2139,8 +2139,8 @@ export class AgentThreadStreamRuntime {
           return;
         }
         if (
-          state.activeThreadRunIds.get(key) !== data.runId ||
-          state.activeThreadStreamIds.get(key) !== data.streamId
+          !deferredRunsByStreamId.has(data.streamId) &&
+          (state.activeThreadRunIds.get(key) !== data.runId || state.activeThreadStreamIds.get(key) !== data.streamId)
         ) {
           if (!(await markActiveIfLive(data.runId, data.streamId, false))) return;
         }
@@ -2284,7 +2284,7 @@ export class AgentThreadStreamRuntime {
       return processed.then(() => ack?.());
     };
 
-    await resolvedPubSub.subscribe(topic, onEvent, { start: 'latest' });
+    await resolvedPubSub.subscribe(topic, onEvent);
 
     if (!activeRunId()) {
       const owner = await this.#getLeaseProvider(resolvedPubSub)
