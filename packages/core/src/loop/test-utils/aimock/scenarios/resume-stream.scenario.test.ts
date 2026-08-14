@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { z } from 'zod/v4';
 import { MockMemory } from '../../../../memory';
+import { RequestContext } from '../../../../request-context';
 import { createTool } from '../../../../tools';
 import { createSharedAgent, runLoopScenario, useLoopScenarioAimock, describeForAllEngines } from '../aimock-scenario';
 
@@ -30,6 +31,7 @@ describeForAllEngines(
     it('resumes a suspended tool when resumeStream() is called with resume data', async () => {
       let suspendCalled = false;
       let resumeDataReceived: string | undefined;
+      let resumeContextReceived: Record<string, unknown> | undefined;
 
       const findUserTool = createTool({
         id: 'find-user',
@@ -49,6 +51,11 @@ describeForAllEngines(
             return await context?.agent?.suspend({ message: 'Please provide the name of the user' });
           }
           resumeDataReceived = context.agent.resumeData?.name;
+          resumeContextReceived = {
+            durableTurnId: context.requestContext?.get('durableTurnId'),
+            actorId: context.requestContext?.get('actorId'),
+            sessionId: context.requestContext?.get('sessionId'),
+          };
           return {
             name: context.agent.resumeData.name,
             email: `${context.agent.resumeData.name.toLowerCase()}@test.com`,
@@ -62,6 +69,10 @@ describeForAllEngines(
         engine,
       });
 
+      const initialRequestContext = new RequestContext();
+      initialRequestContext.set('durableTurnId', 'original-turn');
+      initialRequestContext.set('actorId', 'guest-user');
+
       // First call: model calls the tool, tool suspends
       const { output, chunks } = await runLoopScenario({
         engine,
@@ -71,6 +82,7 @@ describeForAllEngines(
         memory: new MockMemory(),
         threadId: 'test-thread',
         resourceId: 'test-resource',
+        requestContext: initialRequestContext,
         fixtures: llm => {
           llm.onMessage(/find/i, {
             toolCalls: [
@@ -92,7 +104,13 @@ describeForAllEngines(
       expect(resumeDataReceived).toBeUndefined();
 
       // Resume: call agent.resumeStream with the runId and resume data
-      const resumeOutput = await shared.agent.resumeStream({ name: 'Dero Israel' }, { runId: output.runId });
+      const resumeRequestContext = new RequestContext();
+      resumeRequestContext.set('actorId', 'signed-in-user');
+      resumeRequestContext.set('sessionId', 'current-session');
+      const resumeOutput = await shared.agent.resumeStream(
+        { name: 'Dero Israel' },
+        { runId: output.runId, requestContext: resumeRequestContext },
+      );
 
       // Consume the resume stream
       for await (const _chunk of resumeOutput.fullStream) {
@@ -101,6 +119,11 @@ describeForAllEngines(
 
       // Assert: tool received the resume data
       expect(resumeDataReceived).toBe('Dero Israel');
+      expect(resumeContextReceived).toEqual({
+        durableTurnId: 'original-turn',
+        actorId: 'signed-in-user',
+        sessionId: 'current-session',
+      });
 
       // Assert: tool results contain the user data
       const toolResults = await resumeOutput.toolResults;

@@ -6796,6 +6796,9 @@ export class Agent<
     const existingSnapshot = resumeContext?.snapshot;
     const snapshotMemoryInfo = this.#getSnapshotMemoryInfo(existingSnapshot);
     const requestContext = options.requestContext || new RequestContext();
+    for (const [key, value] of Object.entries(existingSnapshot?.requestContext ?? {})) {
+      if (!requestContext.has(key)) requestContext.set(key, value);
+    }
 
     // Build version overrides by merging: Mastra defaults < requestContext < call-site
     const requestVersions = requestContext.get(MASTRA_VERSIONS_KEY) as VersionOverrides | undefined;
