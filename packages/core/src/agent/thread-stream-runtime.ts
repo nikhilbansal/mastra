@@ -340,9 +340,13 @@ export class AgentThreadStreamRuntime {
    * this run.
    */
   #releaseThreadLease(pubsub: PubSub | undefined, key: string, runId: string): void {
+    void this.#releaseThreadLeaseAndWait(pubsub, key, runId);
+  }
+
+  async #releaseThreadLeaseAndWait(pubsub: PubSub | undefined, key: string, runId: string): Promise<void> {
     const resolved = this.#getPubSub(pubsub);
     this.#stopLeaseRenewal(resolved, runId);
-    void this.#getLeaseProvider(resolved)
+    await this.#getLeaseProvider(resolved)
       .releaseLease(key, runId)
       .catch(() => {});
   }
@@ -813,27 +817,56 @@ export class AgentThreadStreamRuntime {
     };
   }
 
-  abortRun(runId: string, pubsub?: PubSub): boolean {
+  #abortRun(runId: string, pubsub?: PubSub): { aborted: boolean; settled: Promise<void> } {
     const state = this.#getState(pubsub);
     const preparedRun = state.preparedRunsById.get(runId);
-    if (!preparedRun) {
+    const record = state.threadRunsById.get(runId);
+    const suspended = Boolean(
+      record &&
+      (record.output.status === 'suspended' ||
+        record.lifecycle === 'suspending' ||
+        record.lifecycle === 'suspended' ||
+        this.#isSuspendedRun(state, runId)),
+    );
+    if (!preparedRun && !suspended) {
       state.abortedRunIds.add(runId);
-      return false;
+      return { aborted: false, settled: Promise.resolve() };
     }
 
-    preparedRun.abortController.abort();
+    preparedRun?.abortController.abort();
     state.abortedRunIds.add(runId);
 
     const key = state.threadKeysByRunId.get(runId);
-    if (key) {
-      const streamId = state.activeThreadRunIds.get(key) === runId ? state.activeThreadStreamIds.get(key) : undefined;
-      void (streamId ? this.#releaseActiveStreamLease(pubsub, key, runId, streamId) : Promise.resolve()).then(() => {
-        this.#releaseThreadLease(pubsub, key, runId);
-        this.#publish(pubsub, key, { type: 'run-aborted', runId, streamId });
-      });
+    if (!key) return { aborted: true, settled: Promise.resolve() };
+
+    const streamId = state.activeThreadRunIds.get(key) === runId ? state.activeThreadStreamIds.get(key) : undefined;
+    if (state.activeThreadRunIds.get(key) === runId) {
+      state.activeThreadRunIds.delete(key);
+      state.activeThreadStreamIds.delete(key);
     }
 
-    return true;
+    if (suspended && record) {
+      record.lifecycle = 'aborted';
+      this.#clearSuspendedRun(state, runId);
+      state.threadRunsById.delete(runId);
+      state.threadRunsByStreamId.delete(record.streamId);
+      state.threadKeysByRunId.delete(runId);
+      state.watchedThreadStreamIds.delete(record.streamId);
+      state.abortedRunIds.delete(runId);
+    }
+
+    const settled = (async () => {
+      if (streamId) await this.#releaseActiveStreamLease(pubsub, key, runId, streamId);
+      await this.#releaseThreadLeaseAndWait(pubsub, key, runId);
+      await this.#publishAndWait(pubsub, key, { type: 'run-aborted', runId, streamId });
+    })();
+    return { aborted: true, settled };
+  }
+
+  abortRun(runId: string, pubsub?: PubSub): boolean {
+    const result = this.#abortRun(runId, pubsub);
+    void result.settled.catch(() => {});
+    return result.aborted;
   }
 
   getActiveThreadRunId(options: AgentSubscribeToThreadOptions, pubsub?: PubSub): string | undefined {
@@ -948,6 +981,27 @@ export class AgentThreadStreamRuntime {
     const streamId = state.activeThreadStreamIds.get(key);
     if (!streamId) return false;
     this.#publish(resolvedPubSub, key, { type: 'run-abort-requested', runId, streamId });
+    return true;
+  }
+
+  async abortThreadAndWait(options: AgentSubscribeToThreadOptions, pubsub?: PubSub): Promise<boolean> {
+    const resolvedPubSub = this.#getPubSub(pubsub);
+    const state = this.#getState(resolvedPubSub);
+    const key = this.#threadKey(options.resourceId, options.threadId);
+    const runId = this.getActiveThreadRunId(options, resolvedPubSub);
+    if (!runId) return false;
+
+    if (state.threadKeysByRunId.get(runId) === key) {
+      const result = this.#abortRun(runId, resolvedPubSub);
+      await result.settled;
+      return true;
+    }
+
+    if (state.remoteThreadKeysByRunId.get(runId) !== key) return false;
+    const streamId = state.activeThreadStreamIds.get(key);
+    if (!streamId) return false;
+    await this.#publishAndWait(resolvedPubSub, key, { type: 'run-abort-requested', runId, streamId });
+    await this.#waitForRemoteRunToFinish(resolvedPubSub, key, runId);
     return true;
   }
 
@@ -1367,6 +1421,8 @@ export class AgentThreadStreamRuntime {
     void Promise.allSettled(registered ? [finished, registered] : [finished]).then(async () => {
       state.watchedThreadStreamIds.delete(record.streamId);
       this.#cleanupPreparedRun(state, record.runId);
+
+      if (record.lifecycle === 'aborted') return;
 
       if (record.output.status === 'suspended' && this.#isSuspendedRun(state, record.runId)) {
         record.lifecycle = 'suspended';
@@ -1895,7 +1951,7 @@ export class AgentThreadStreamRuntime {
     try {
       await resolvedPubSub.subscribe(topic, onEvent);
       subscribed = true;
-      if (!isFallback) timer = setTimeout(() => void checkLease(), AGENT_THREAD_LEASE_TTL_MS);
+      if (!isFallback) void checkLease();
       await wait;
     } catch {
       finish();
@@ -2193,13 +2249,12 @@ export class AgentThreadStreamRuntime {
       }
       if (data.type === 'run-abort-requested') {
         if (
-          state.preparedRunsById.has(data.runId) &&
           state.threadKeysByRunId.get(data.runId) === key &&
           state.activeThreadRunIds.get(key) === data.runId &&
           state.activeThreadStreamIds.get(key) === data.streamId &&
           (await this.#hasLiveThreadLease(resolvedPubSub, key, data.runId))
         ) {
-          this.abortRun(data.runId, resolvedPubSub);
+          await this.#abortRun(data.runId, resolvedPubSub).settled;
         }
         return;
       }

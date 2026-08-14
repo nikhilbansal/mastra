@@ -7904,8 +7904,8 @@ export class Agent<
     return { runs: paginatedRuns, total };
   }
 
-  abortThreadStream(options: AgentSubscribeToThreadOptions): boolean {
-    return agentThreadStreamRuntime.abortThread(options, this.getPubSub());
+  abortThreadStream(options: AgentSubscribeToThreadOptions): Promise<boolean> {
+    return agentThreadStreamRuntime.abortThreadAndWait(options, this.getPubSub());
   }
 
   abortRunStream(runId: string): boolean {

@@ -2972,6 +2972,49 @@ describe('Agent signals', () => {
     }
   });
 
+  it('starts a queued message after aborting a suspended run', async () => {
+    const runtime = new AgentThreadStreamRuntime();
+    const pubsub = new EventEmitterPubSub();
+    const runId = 'superseded-suspended-run';
+    const threadId = 'superseded-suspended-thread';
+    const resourceId = 'superseded-suspended-user';
+    const agent = {
+      id: 'superseded-suspended-agent',
+      getMemory: vi.fn(async () => undefined),
+      stream: vi.fn(async (_signal, options: any) => ({ runId: options.runId })),
+    } as unknown as Agent<any, any, any, any>;
+
+    runtime.registerRun(
+      agent,
+      {
+        runId,
+        status: 'suspended',
+        fullStream: new ReadableStream({
+          start(controller) {
+            controller.enqueue({ type: 'start', runId });
+            controller.enqueue({
+              type: 'tool-call-approval',
+              runId,
+              payload: { toolCallId: 'superseded-tool-call', toolName: 'testTool' },
+            });
+            controller.close();
+          },
+        }),
+        _waitUntilFinished: () => Promise.resolve(),
+      } as any,
+      { memory: { thread: threadId, resource: resourceId } } as any,
+      pubsub,
+    );
+
+    await waitForCondition(() => Boolean(runtime.getResumableThreadRun({ resourceId, threadId, runId }, pubsub)));
+    await expect(runtime.abortThreadAndWait({ resourceId, threadId }, pubsub)).resolves.toBe(true);
+    expect(runtime.getActiveThreadRunId({ resourceId, threadId }, pubsub)).toBeUndefined();
+
+    const followUp = runtime.queueMessage(agent, 'Start a replacement turn', { resourceId, threadId }, pubsub);
+    await expect(followUp.accepted).resolves.toMatchObject({ action: 'wake' });
+    expect((agent as any).stream).toHaveBeenCalledOnce();
+  });
+
   it('restores a queued signal when the drain follow-up stream fails', async () => {
     const runtime = new AgentThreadStreamRuntime();
     const streamMock = vi.fn().mockRejectedValue(new Error('connection error: ECONNRESET'));
