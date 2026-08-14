@@ -7940,7 +7940,7 @@ export class Agent<
       ...(options.resourceId ? { resourceId: options.resourceId } : {}),
       perPage: false,
     });
-    const settledMessages: MastraDBMessage[] = [];
+    const settledMessages: Pick<MastraDBMessage, 'id' | 'content'>[] = [];
 
     const isAbortedToolCall = (value: unknown) =>
       Boolean(
@@ -8003,13 +8003,13 @@ export class Agent<
             return !remove;
           }),
         );
-        if (Object.keys(remaining).length === 0) delete metadata[key];
+        if (Object.keys(remaining).length === 0) metadata[key] = undefined;
         else metadata[key] = remaining;
       }
 
       if (!changed) continue;
       settledMessages.push({
-        ...message,
+        id: message.id,
         content: {
           ...message.content,
           parts,
@@ -8020,7 +8020,7 @@ export class Agent<
     }
 
     if (settledMessages.length > 0) {
-      await memory.saveMessages({ messages: settledMessages });
+      await memory.updateMessages({ messages: settledMessages });
     }
   }
 

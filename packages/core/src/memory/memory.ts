@@ -3,7 +3,7 @@ import type { MastraDBMessage } from '../agent/message-list';
 import { MastraFGAPermissions } from '../auth/ee';
 import type { MastraFGAPermissionInput, ActorSignal } from '../auth/ee';
 import { MastraBase } from '../base';
-import { ErrorDomain, MastraError } from '../error';
+import { ErrorCategory, ErrorDomain, MastraError } from '../error';
 import { ModelRouterEmbeddingModel } from '../llm/model';
 import type { EmbeddingModelId, ModelRouterModelId } from '../llm/model';
 import type { Mastra } from '../mastra';
@@ -460,6 +460,23 @@ https://mastra.ai/en/docs/memory/overview`,
     memoryConfig?: MemoryConfig | undefined;
     observabilityContext?: Partial<ObservabilityContext>;
   }): Promise<{ messages: MastraDBMessage[]; usage?: { tokens: number } }>;
+
+  async updateMessages({
+    messages,
+  }: {
+    messages: (Partial<MastraDBMessage> & { id: string })[];
+  }): Promise<MastraDBMessage[]> {
+    const memoryStore = await this.storage.getStore('memory');
+    if (!memoryStore) {
+      throw new MastraError({
+        id: 'MASTRA_MEMORY_STORAGE_NOT_AVAILABLE',
+        domain: ErrorDomain.MASTRA_MEMORY,
+        category: ErrorCategory.SYSTEM,
+        text: 'Memory storage is not supported by this storage adapter',
+      });
+    }
+    return memoryStore.updateMessages({ messages });
+  }
 
   /**
    * Retrieves messages for a specific thread with optional semantic recall
