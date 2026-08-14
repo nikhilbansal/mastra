@@ -383,6 +383,11 @@ export interface AgentListSuspendedRunsResult {
   total: number;
 }
 
+type StoredAgentRun = {
+  workflowName: string;
+  run: AgentRun;
+};
+
 function getInvocationActor(context: unknown): ActorSignal | undefined {
   return (context as { actor?: ActorSignal } | undefined)?.actor;
 }
@@ -7805,28 +7810,8 @@ export class Agent<
    * }
    * ```
    */
-  async listSuspendedRuns(options: AgentListSuspendedRunsOptions = {}): Promise<AgentListSuspendedRunsResult> {
-    const { threadId, resourceId, fromDate, toDate, perPage, page } = options;
-
-    if (perPage !== undefined && (!Number.isInteger(perPage) || perPage <= 0)) {
-      throw new MastraError({
-        id: 'AGENT_LIST_SUSPENDED_RUNS_INVALID_PER_PAGE',
-        domain: ErrorDomain.AGENT,
-        category: ErrorCategory.USER,
-        text: `Agent "${this.name}" listSuspendedRuns() requires perPage to be a positive integer.`,
-        details: { agentName: this.name, perPage },
-      });
-    }
-    if (page !== undefined && (!Number.isInteger(page) || page < 0)) {
-      throw new MastraError({
-        id: 'AGENT_LIST_SUSPENDED_RUNS_INVALID_PAGE',
-        domain: ErrorDomain.AGENT,
-        category: ErrorCategory.USER,
-        text: `Agent "${this.name}" listSuspendedRuns() requires page to be a non-negative integer.`,
-        details: { agentName: this.name, page },
-      });
-    }
-
+  async #getStoredSuspendedRuns(options: AgentListSuspendedRunsOptions) {
+    const { threadId, resourceId, fromDate, toDate } = options;
     const effectiveMastra = this.#mastra ?? (await this.#getOrCreateEphemeralMastra());
     const workflowsStore = await effectiveMastra?.getStorage()?.getStore('workflows');
 
@@ -7847,7 +7832,10 @@ export class Agent<
     // `total` accurate. Durable agents persist their agentic loop under a
     // separate workflow name, so query both — otherwise suspended durable runs
     // are never discoverable.
-    const runs: Awaited<ReturnType<typeof workflowsStore.listWorkflowRuns>>['runs'] = [];
+    const runs: Array<{
+      workflowName: string;
+      run: Awaited<ReturnType<typeof workflowsStore.listWorkflowRuns>>['runs'][number];
+    }> = [];
     for (const workflowName of ['agentic-loop', DurableStepIds.AGENTIC_LOOP]) {
       const { runs: workflowRuns } = await workflowsStore.listWorkflowRuns({
         workflowName,
@@ -7855,11 +7843,11 @@ export class Agent<
         fromDate,
         toDate,
       });
-      runs.push(...workflowRuns);
+      runs.push(...workflowRuns.map(run => ({ workflowName, run })));
     }
 
-    const matchedRuns: AgentRun[] = [];
-    for (const run of runs) {
+    const matchedRuns: StoredAgentRun[] = [];
+    for (const { workflowName, run } of runs) {
       let snapshot = run.snapshot;
       if (typeof snapshot === 'string') {
         try {
@@ -7886,14 +7874,44 @@ export class Agent<
       if (resourceId && runResourceId !== resourceId) continue;
 
       matchedRuns.push({
-        runId: run.runId,
-        status: 'suspended',
-        threadId: runThreadId,
-        resourceId: runResourceId,
-        suspendedAt: run.updatedAt,
-        toolCalls: this.#getSuspendedToolCalls(snapshot),
+        workflowName,
+        run: {
+          runId: run.runId,
+          status: 'suspended',
+          threadId: runThreadId,
+          resourceId: runResourceId,
+          suspendedAt: run.updatedAt,
+          toolCalls: this.#getSuspendedToolCalls(snapshot),
+        },
       });
     }
+
+    return { runs: matchedRuns, workflowsStore };
+  }
+
+  async listSuspendedRuns(options: AgentListSuspendedRunsOptions = {}): Promise<AgentListSuspendedRunsResult> {
+    const { perPage, page } = options;
+
+    if (perPage !== undefined && (!Number.isInteger(perPage) || perPage <= 0)) {
+      throw new MastraError({
+        id: 'AGENT_LIST_SUSPENDED_RUNS_INVALID_PER_PAGE',
+        domain: ErrorDomain.AGENT,
+        category: ErrorCategory.USER,
+        text: `Agent "${this.name}" listSuspendedRuns() requires perPage to be a positive integer.`,
+        details: { agentName: this.name, perPage },
+      });
+    }
+    if (page !== undefined && (!Number.isInteger(page) || page < 0)) {
+      throw new MastraError({
+        id: 'AGENT_LIST_SUSPENDED_RUNS_INVALID_PAGE',
+        domain: ErrorDomain.AGENT,
+        category: ErrorCategory.USER,
+        text: `Agent "${this.name}" listSuspendedRuns() requires page to be a non-negative integer.`,
+        details: { agentName: this.name, page },
+      });
+    }
+
+    const { runs: matchedRuns } = await this.#getStoredSuspendedRuns(options);
 
     const total = matchedRuns.length;
     const paginatedRuns =
@@ -7901,11 +7919,24 @@ export class Agent<
         ? matchedRuns.slice(page * perPage, (page + 1) * perPage)
         : matchedRuns;
 
-    return { runs: paginatedRuns, total };
+    return { runs: paginatedRuns.map(({ run }) => run), total };
   }
 
-  abortThreadStream(options: AgentSubscribeToThreadOptions): Promise<boolean> {
-    return agentThreadStreamRuntime.abortThreadAndWait(options, this.getPubSub());
+  async abortThreadStream(options: AgentSubscribeToThreadOptions): Promise<boolean> {
+    const activeAborted = await agentThreadStreamRuntime.abortThreadAndWait(options, this.getPubSub());
+    const { runs: suspendedRuns, workflowsStore } = await this.#getStoredSuspendedRuns(options);
+    if (suspendedRuns.length === 0) return activeAborted;
+
+    await Promise.all(
+      suspendedRuns.map(({ workflowName, run }) =>
+        workflowsStore.updateWorkflowState({
+          workflowName,
+          runId: run.runId,
+          opts: { status: 'canceled' },
+        }),
+      ),
+    );
+    return true;
   }
 
   abortRunStream(runId: string): boolean {
