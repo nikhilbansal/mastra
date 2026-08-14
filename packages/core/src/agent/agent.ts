@@ -7922,7 +7922,109 @@ export class Agent<
     return { runs: paginatedRuns.map(({ run }) => run), total };
   }
 
-  async abortThreadStream(options: AgentSubscribeToThreadOptions): Promise<boolean> {
+  async #settleAbortedToolCalls(
+    options: AgentSubscribeToThreadOptions,
+    suspendedRuns: StoredAgentRun[],
+    requestContext?: RequestContext,
+  ): Promise<void> {
+    const toolCallIds = new Set(
+      suspendedRuns.flatMap(({ run }) => run.toolCalls.map(toolCall => toolCall.toolCallId).filter(Boolean)),
+    );
+    if (toolCallIds.size === 0) return;
+
+    const memory = await this.getMemory({ requestContext });
+    if (!memory) return;
+
+    const { messages } = await memory.recall({
+      threadId: options.threadId,
+      ...(options.resourceId ? { resourceId: options.resourceId } : {}),
+      perPage: false,
+    });
+    const settledMessages: MastraDBMessage[] = [];
+
+    const isAbortedToolCall = (value: unknown) =>
+      Boolean(
+        value &&
+        typeof value === 'object' &&
+        'toolCallId' in value &&
+        typeof value.toolCallId === 'string' &&
+        toolCallIds.has(value.toolCallId),
+      );
+
+    for (const message of messages) {
+      if (message.role !== 'assistant') continue;
+      let changed = false;
+      const parts = message.content.parts.flatMap(part => {
+        if (
+          (part.type === 'data-tool-call-suspended' || part.type === 'data-tool-call-approval') &&
+          isAbortedToolCall(part.data)
+        ) {
+          changed = true;
+          return [];
+        }
+        if (part.type !== 'tool-invocation' || !toolCallIds.has(part.toolInvocation.toolCallId)) {
+          return [part];
+        }
+        changed = true;
+        return [
+          {
+            ...part,
+            toolInvocation: {
+              ...part.toolInvocation,
+              state: 'output-denied' as const,
+              approval: {
+                id: part.toolInvocation.toolCallId,
+                approved: false,
+                reason: 'Aborted by the user',
+              },
+            },
+          },
+        ];
+      });
+
+      const toolInvocations = message.content.toolInvocations?.map(toolInvocation => {
+        if (!toolCallIds.has(toolInvocation.toolCallId)) return toolInvocation;
+        changed = true;
+        return {
+          ...toolInvocation,
+          state: 'result' as const,
+          result: 'Aborted by the user',
+        };
+      });
+
+      const metadata = { ...(message.content.metadata ?? {}) };
+      for (const key of ['suspendedTools', 'pendingToolApprovals'] as const) {
+        const toolStates = metadata[key];
+        if (!toolStates || typeof toolStates !== 'object' || Array.isArray(toolStates)) continue;
+        const remaining = Object.fromEntries(
+          Object.entries(toolStates).filter(([entryKey, value]) => {
+            const remove = toolCallIds.has(entryKey) || isAbortedToolCall(value);
+            if (remove) changed = true;
+            return !remove;
+          }),
+        );
+        if (Object.keys(remaining).length === 0) delete metadata[key];
+        else metadata[key] = remaining;
+      }
+
+      if (!changed) continue;
+      settledMessages.push({
+        ...message,
+        content: {
+          ...message.content,
+          parts,
+          ...(toolInvocations ? { toolInvocations } : {}),
+          metadata,
+        },
+      });
+    }
+
+    if (settledMessages.length > 0) {
+      await memory.saveMessages({ messages: settledMessages });
+    }
+  }
+
+  async abortThreadStream(options: AgentSubscribeToThreadOptions, requestContext?: RequestContext): Promise<boolean> {
     const activeAborted = await agentThreadStreamRuntime.abortThreadAndWait(options, this.getPubSub());
     const { runs: suspendedRuns, workflowsStore } = await this.#getStoredSuspendedRuns(options);
     if (suspendedRuns.length === 0) return activeAborted;
@@ -7930,11 +8032,14 @@ export class Agent<
     await Promise.all(
       suspendedRuns.map(async ({ workflowName, run }) => {
         await agentThreadStreamRuntime.abortThreadRunAndWait({ ...options, runId: run.runId }, this.getPubSub());
-        await Promise.all([
-          workflowsStore.deleteWorkflowRunById({ workflowName, runId: run.runId }),
-          workflowsStore.deleteWorkflowRunById({ workflowName: 'executionWorkflow', runId: run.runId }),
-        ]);
       }),
+    );
+    await this.#settleAbortedToolCalls(options, suspendedRuns, requestContext);
+    await Promise.all(
+      suspendedRuns.flatMap(({ workflowName, run }) => [
+        workflowsStore.deleteWorkflowRunById({ workflowName, runId: run.runId }),
+        workflowsStore.deleteWorkflowRunById({ workflowName: 'executionWorkflow', runId: run.runId }),
+      ]),
     );
     return true;
   }

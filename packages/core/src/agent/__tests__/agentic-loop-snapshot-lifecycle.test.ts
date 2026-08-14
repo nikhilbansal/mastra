@@ -10,6 +10,7 @@
 import { describe, expect, it, vi } from 'vitest';
 import { z } from 'zod/v4';
 import { Mastra } from '../../mastra';
+import { MockMemory } from '../../memory/mock';
 import { InMemoryStore } from '../../storage';
 import { createTool } from '../../tools';
 import type { WorkflowRunState } from '../../workflows';
@@ -118,6 +119,58 @@ describe('agentic-loop snapshot lifecycle', () => {
 
     await expect(agent.abortThreadStream({ threadId, resourceId })).resolves.toBe(true);
     expect((await workflowsStore.listWorkflowRuns({})).runs).toHaveLength(0);
+  }, 30_000);
+
+  it('settles suspended tool history when a restarted agent aborts the thread', async () => {
+    const storage = new InMemoryStore();
+    const threadId = 'abort-restarted-thread';
+    const resourceId = 'abort-restarted-resource';
+    const firstAgent = new Agent({
+      id: 'abort-restarted-agent',
+      name: 'Abort Restarted Agent',
+      instructions: 'You find users.',
+      model: createMockModel(),
+      memory: new MockMemory({ storage }),
+      tools: { findUserTool: createFindUserTool() },
+    });
+    new Mastra({ agents: { firstAgent }, logger: false, storage });
+
+    const stream = await firstAgent.stream('Find the user with name - Dero Israel', {
+      memory: { thread: threadId, resource: resourceId },
+      requireToolApproval: true,
+    });
+    for await (const _chunk of stream.fullStream) {
+      // consume through suspension
+    }
+
+    const restartedAgent = new Agent({
+      id: 'abort-restarted-agent',
+      name: 'Abort Restarted Agent',
+      instructions: 'You find users.',
+      model: createMockModel(),
+      memory: new MockMemory({ storage }),
+      tools: { findUserTool: createFindUserTool() },
+    });
+    const restartedMastra = new Mastra({ agents: { restartedAgent }, logger: false, storage });
+    const workflowsStore = (await restartedMastra.getStorage()!.getStore('workflows'))!;
+
+    await expect(restartedAgent.abortThreadStream({ threadId, resourceId })).resolves.toBe(true);
+    expect((await workflowsStore.listWorkflowRuns({})).runs).toHaveLength(0);
+
+    const memory = await restartedAgent.getMemory();
+    const { messages } = await memory!.recall({ threadId, resourceId, perPage: false });
+    const assistant = messages.find(message => message.role === 'assistant');
+    const invocation = assistant?.content.parts.find(part => part.type === 'tool-invocation');
+    expect(invocation).toMatchObject({
+      type: 'tool-invocation',
+      toolInvocation: {
+        toolCallId: 'call-1',
+        state: 'output-denied',
+        approval: { approved: false, reason: 'Aborted by the user' },
+      },
+    });
+    expect(assistant?.content.metadata?.suspendedTools).toBeUndefined();
+    expect(assistant?.content.metadata?.pendingToolApprovals).toBeUndefined();
   }, 30_000);
 
   it('keeps snapshot rows while suspended and deletes all rows after resume completes', async () => {

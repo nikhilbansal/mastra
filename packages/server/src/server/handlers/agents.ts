@@ -2260,7 +2260,10 @@ export const ABORT_AGENT_THREAD_ROUTE = createRoute({
         }
       }
 
-      const aborted = await agent.abortThreadStream({ resourceId: effectiveResourceId, threadId: effectiveThreadId });
+      const aborted = await agent.abortThreadStream(
+        { resourceId: effectiveResourceId, threadId: effectiveThreadId },
+        serverRequestContext,
+      );
       return { aborted };
     } catch (error) {
       return handleError(error, 'error aborting agent thread');
