@@ -90,6 +90,36 @@ function summarizeRuns(runs: { workflowName: string; runId: string; snapshot: st
 }
 
 describe('agentic-loop snapshot lifecycle', () => {
+  it('deletes both snapshot rows when a suspended thread is aborted', async () => {
+    const agent = new Agent({
+      id: 'abort-agent',
+      name: 'Abort Agent',
+      instructions: 'You find users.',
+      model: createMockModel(),
+      tools: { findUserTool: createFindUserTool() },
+    });
+    const mastra = new Mastra({
+      agents: { agent },
+      logger: false,
+      storage: new InMemoryStore(),
+    });
+    const workflowsStore = (await mastra.getStorage()!.getStore('workflows'))!;
+    const threadId = 'abort-suspended-thread';
+    const resourceId = 'abort-suspended-resource';
+    const stream = await agent.stream('Find the user with name - Dero Israel', {
+      memory: { thread: threadId, resource: resourceId },
+      requireToolApproval: true,
+    });
+
+    for await (const _chunk of stream.fullStream) {
+      // consume through suspension
+    }
+    expect((await workflowsStore.listWorkflowRuns({})).runs).toHaveLength(2);
+
+    await expect(agent.abortThreadStream({ threadId, resourceId })).resolves.toBe(true);
+    expect((await workflowsStore.listWorkflowRuns({})).runs).toHaveLength(0);
+  }, 30_000);
+
   it('keeps snapshot rows while suspended and deletes all rows after resume completes', async () => {
     const agent = new Agent({
       id: 'user-agent',

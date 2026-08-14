@@ -3015,6 +3015,60 @@ describe('Agent signals', () => {
     expect((agent as any).stream).toHaveBeenCalledOnce();
   });
 
+  it('releases a suspended run lease from another runtime before starting a replacement', async () => {
+    const pubsub = new EventEmitterPubSub();
+    const ownerRuntime = new AgentThreadStreamRuntime();
+    const replacementRuntime = new AgentThreadStreamRuntime();
+    const runId = 'remote-suspended-run';
+    const threadId = 'remote-suspended-thread';
+    const resourceId = 'remote-suspended-user';
+    const key = `${resourceId}\u0000${threadId}`;
+    const agent = {
+      id: 'remote-suspended-agent',
+      getMemory: vi.fn(async () => undefined),
+      stream: vi.fn(async (_signal, options: any) => ({ runId: options.runId })),
+    } as unknown as Agent<any, any, any, any>;
+
+    await pubsub.acquireLease(key, runId, 15_000);
+    ownerRuntime.registerRun(
+      agent,
+      {
+        runId,
+        status: 'suspended',
+        fullStream: new ReadableStream({
+          start(controller) {
+            controller.enqueue({ type: 'start', runId });
+            controller.enqueue({
+              type: 'tool-call-approval',
+              runId,
+              payload: { toolCallId: 'remote-tool-call', toolName: 'testTool' },
+            });
+            controller.close();
+          },
+        }),
+        _waitUntilFinished: () => Promise.resolve(),
+      } as any,
+      { memory: { thread: threadId, resource: resourceId } } as any,
+      pubsub,
+    );
+
+    await waitForCondition(() => ownerRuntime.getActiveThreadRunId({ resourceId, threadId }, pubsub) === runId);
+    await expect(replacementRuntime.abortThreadRunAndWait({ resourceId, threadId, runId }, pubsub)).resolves.toBe(true);
+    await expect(pubsub.getLeaseOwner(key)).resolves.toBeUndefined();
+
+    const followUp = replacementRuntime.queueMessage(
+      agent,
+      'Start a replacement turn',
+      {
+        resourceId,
+        threadId,
+      },
+      pubsub,
+    );
+    await expect(followUp.accepted).resolves.toMatchObject({ action: 'wake' });
+    expect((agent as any).stream).toHaveBeenCalledOnce();
+  });
+
   it('restores a queued signal when the drain follow-up stream fails', async () => {
     const runtime = new AgentThreadStreamRuntime();
     const streamMock = vi.fn().mockRejectedValue(new Error('connection error: ECONNRESET'));

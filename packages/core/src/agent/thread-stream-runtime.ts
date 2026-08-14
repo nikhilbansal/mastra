@@ -986,10 +986,20 @@ export class AgentThreadStreamRuntime {
 
   async abortThreadAndWait(options: AgentSubscribeToThreadOptions, pubsub?: PubSub): Promise<boolean> {
     const resolvedPubSub = this.#getPubSub(pubsub);
-    const state = this.#getState(resolvedPubSub);
-    const key = this.#threadKey(options.resourceId, options.threadId);
     const runId = this.getActiveThreadRunId(options, resolvedPubSub);
     if (!runId) return false;
+
+    return this.abortThreadRunAndWait({ ...options, runId }, resolvedPubSub);
+  }
+
+  async abortThreadRunAndWait(
+    options: AgentSubscribeToThreadOptions & { runId: string },
+    pubsub?: PubSub,
+  ): Promise<boolean> {
+    const resolvedPubSub = this.#getPubSub(pubsub);
+    const state = this.#getState(resolvedPubSub);
+    const key = this.#threadKey(options.resourceId, options.threadId);
+    const { runId } = options;
 
     if (state.threadKeysByRunId.get(runId) === key) {
       const result = this.#abortRun(runId, resolvedPubSub);
@@ -997,11 +1007,28 @@ export class AgentThreadStreamRuntime {
       return true;
     }
 
-    if (state.remoteThreadKeysByRunId.get(runId) !== key) return false;
-    const streamId = state.activeThreadStreamIds.get(key);
-    if (!streamId) return false;
-    await this.#publishAndWait(resolvedPubSub, key, { type: 'run-abort-requested', runId, streamId });
-    await this.#waitForRemoteRunToFinish(resolvedPubSub, key, runId);
+    const leaseProvider = this.#getLeaseProvider(resolvedPubSub);
+    const leaseOwner = await leaseProvider.getLeaseOwner(key).catch(() => undefined);
+    if (leaseOwner !== runId) return false;
+
+    const activeOwner = this.#parseActiveStreamLeaseOwner(
+      await leaseProvider.getLeaseOwner(this.#activeStreamLeaseKey(key)).catch(() => undefined),
+    );
+    if (activeOwner?.runId === runId) {
+      state.activeThreadRunIds.set(key, runId);
+      state.activeThreadStreamIds.set(key, activeOwner.streamId);
+      state.remoteThreadKeysByRunId.set(runId, key);
+      await this.#publishAndWait(resolvedPubSub, key, {
+        type: 'run-abort-requested',
+        runId,
+        streamId: activeOwner.streamId,
+      });
+      await this.#waitForRemoteRunToFinish(resolvedPubSub, key, runId);
+      return true;
+    }
+
+    await this.#releaseThreadLeaseAndWait(resolvedPubSub, key, runId);
+    await this.#publishAndWait(resolvedPubSub, key, { type: 'run-aborted', runId });
     return true;
   }
 

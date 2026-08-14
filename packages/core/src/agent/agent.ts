@@ -7928,13 +7928,13 @@ export class Agent<
     if (suspendedRuns.length === 0) return activeAborted;
 
     await Promise.all(
-      suspendedRuns.map(({ workflowName, run }) =>
-        workflowsStore.updateWorkflowState({
-          workflowName,
-          runId: run.runId,
-          opts: { status: 'canceled' },
-        }),
-      ),
+      suspendedRuns.map(async ({ workflowName, run }) => {
+        await agentThreadStreamRuntime.abortThreadRunAndWait({ ...options, runId: run.runId }, this.getPubSub());
+        await Promise.all([
+          workflowsStore.deleteWorkflowRunById({ workflowName, runId: run.runId }),
+          workflowsStore.deleteWorkflowRunById({ workflowName: 'executionWorkflow', runId: run.runId }),
+        ]);
+      }),
     );
     return true;
   }
