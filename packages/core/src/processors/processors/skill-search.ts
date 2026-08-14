@@ -257,9 +257,13 @@ export class SkillSearchProcessor implements Processor<'skill-search'> {
       ? await configuredSkills.getScoped({ requestContext: args.requestContext })
       : configuredSkills;
 
-    // Refresh skills on first step only
+    // Revalidate skills on first step only. Fire-and-forget: the staleness
+    // walk can cost seconds of filesystem I/O over remote sandboxes, so the
+    // turn proceeds on the cached catalog while the walk runs in the
+    // background. Swallow rejections - an unhandled rejection in a processor
+    // can kill the process.
     if (args.stepNumber === 0) {
-      await skills.maybeRefresh({ requestContext: args.requestContext });
+      void skills.maybeRefresh({ requestContext: args.requestContext })?.catch(() => {});
     }
 
     // Add system instruction about the meta-tools

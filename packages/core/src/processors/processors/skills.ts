@@ -227,9 +227,13 @@ ${skillsMd}`;
   async processInputStep({ messageList, stepNumber, requestContext }: ProcessInputStepArgs) {
     const skills = this._skills?.getScoped ? await this._skills.getScoped({ requestContext }) : this._skills;
 
-    // Refresh skills on first step only (not every step in the agentic loop)
+    // Revalidate skills on first step only (not every step in the agentic loop).
+    // Fire-and-forget: the staleness walk can cost seconds of filesystem I/O
+    // over remote sandboxes, so the turn serves the cached catalog below while
+    // the walk runs in the background. Swallow rejections - an unhandled
+    // rejection in a processor can kill the process.
     if (stepNumber === 0) {
-      await skills?.maybeRefresh({ requestContext });
+      void skills?.maybeRefresh({ requestContext })?.catch(() => {});
     }
     const skillsList = await skills?.list();
     const hasSkills = skillsList && skillsList.length > 0;

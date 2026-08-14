@@ -356,6 +356,49 @@ describe('SkillsProcessor', () => {
       expect(mockSkills.maybeRefresh).toHaveBeenCalledWith({ requestContext });
     });
 
+    it('resolves without awaiting a slow maybeRefresh (fire-and-forget revalidation)', async () => {
+      // maybeRefresh never resolves - the step must still complete and serve the cache
+      const slowSkills = {
+        ...createMockWorkspaceSkills(),
+        maybeRefresh: vi.fn().mockReturnValue(new Promise<void>(() => {})),
+      };
+      const workspace = createMockWorkspace(slowSkills);
+      const proc = new SkillsProcessor({ workspace });
+
+      await proc.processInputStep({
+        messageList: mockMessageList as any,
+        tools: {},
+        stepNumber: 0,
+        requestContext: {},
+      } as any);
+
+      // Revalidation was fired...
+      expect(slowSkills.maybeRefresh).toHaveBeenCalledTimes(1);
+      // ...and the cached catalog was injected without waiting on it
+      const allSystemContent = mockMessageList.addSystem.mock.calls
+        .map((call: any) => call[0]?.content || call[0])
+        .join('\n');
+      expect(allSystemContent).toContain('code-review');
+    });
+
+    it('does not fail the step when maybeRefresh rejects', async () => {
+      const rejectingSkills = {
+        ...createMockWorkspaceSkills(),
+        maybeRefresh: vi.fn().mockRejectedValue(new Error('sandbox unreachable')),
+      };
+      const workspace = createMockWorkspace(rejectingSkills);
+      const proc = new SkillsProcessor({ workspace });
+
+      await expect(
+        proc.processInputStep({
+          messageList: mockMessageList as any,
+          tools: {},
+          stepNumber: 0,
+          requestContext: {},
+        } as any),
+      ).resolves.not.toThrow();
+    });
+
     it('should sort skills by name for deterministic output', async () => {
       // Mock skills in reverse alphabetical order
       const reverseSkills = {
