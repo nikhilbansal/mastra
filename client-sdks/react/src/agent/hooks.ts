@@ -948,15 +948,16 @@ export const useChat = ({
     const onChunk = _onChunk.current;
     const currentRunId = _currentRunId.current;
     const continuation = _activeContinuation.current;
+    const hasThreadSubscription = Boolean(_threadSubscriptionKeyRef.current && threadId);
 
-    if (!currentRunId)
+    if (!currentRunId && !hasThreadSubscription)
       return console.info('[approveToolCall] approveToolCall can only be called after a stream has started');
 
     setIsRunning(true);
     setToolCallApprovals(prev => ({ ...prev, [toolCallId]: { status: 'approved' } }));
 
     const agent = baseClient.getAgent(agentId);
-    if (_threadSubscriptionKeyRef.current && threadId) {
+    if (hasThreadSubscription && threadId) {
       try {
         await agent.sendToolApproval({
           resourceId: resourceId || agentId,
@@ -1000,14 +1001,15 @@ export const useChat = ({
     const onChunk = _onChunk.current;
     const currentRunId = _currentRunId.current;
     const continuation = _activeContinuation.current;
+    const hasThreadSubscription = Boolean(_threadSubscriptionKeyRef.current && threadId);
 
-    if (!currentRunId)
+    if (!currentRunId && !hasThreadSubscription)
       return console.info('[declineToolCall] declineToolCall can only be called after a stream has started');
 
     setIsRunning(true);
     setToolCallApprovals(prev => ({ ...prev, [toolCallId]: { status: 'declined' } }));
     const agent = baseClient.getAgent(agentId);
-    if (_threadSubscriptionKeyRef.current && threadId) {
+    if (hasThreadSubscription && threadId) {
       try {
         await agent.sendToolApproval({
           resourceId: resourceId || agentId,
