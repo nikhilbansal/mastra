@@ -2359,7 +2359,7 @@ export class AgentThreadStreamRuntime {
       return processed.then(() => ack?.());
     };
 
-    await resolvedPubSub.subscribe(topic, onEvent);
+    await resolvedPubSub.subscribe(topic, onEvent, { start: 'latest' });
 
     if (!activeRunId()) {
       const owner = await this.#getLeaseProvider(resolvedPubSub)
