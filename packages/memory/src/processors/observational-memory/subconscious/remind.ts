@@ -407,7 +407,7 @@ export class SubconsciousRemindExtractor extends Extractor<string> {
               ...(remindMemory
                 ? {
                     memory: {
-                      thread: `subconscious:${context.threadId}:remind`,
+                      thread: remindThreadKey(context.threadId),
                       // A reminder always has a thread; a resource is optional on the observation
                       // path, so fall back to the thread to keep the conversation addressable.
                       resource: context.resourceId ?? context.threadId,
