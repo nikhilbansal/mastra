@@ -3675,6 +3675,54 @@ describe('Agent signals', () => {
     subscription.unsubscribe();
   });
 
+  it('queues queueMessage while the completed run flushes its final broadcast', async () => {
+    let releaseBroadcast!: () => void;
+    const broadcastReleased = new Promise<void>(resolve => {
+      releaseBroadcast = resolve;
+    });
+    let markBroadcastBlocked!: () => void;
+    const broadcastBlocked = new Promise<void>(resolve => {
+      markBroadcastBlocked = resolve;
+    });
+    const pubsub = new (class extends ControlledLeasePubSub {
+      override async publish(topic: string, event: any): Promise<void> {
+        if (event.data?.type === 'stream-part' && event.data.part?.type === 'finish') {
+          markBroadcastBlocked();
+          await broadcastReleased;
+        }
+        await super.publish(topic, event);
+      }
+    })();
+    const runtime = new AgentThreadStreamRuntime();
+    const agent = {
+      id: 'queue-tail-agent',
+      getMemory: vi.fn(async () => undefined),
+      stream: vi.fn(async (_signal, options) => ({ runId: options.runId })),
+    } as unknown as Agent<any, any, any, any>;
+    const resourceId = 'queue-tail-user';
+    const threadId = 'queue-tail-thread';
+    const runId = 'queue-tail-run';
+    let finishRun!: () => void;
+    const finished = new Promise<void>(resolve => {
+      finishRun = resolve;
+    });
+    const output = createFakeThreadRun(runId, finished);
+
+    runtime.registerRun(agent, output, { memory: { resource: resourceId, thread: threadId } } as any, pubsub);
+    await broadcastBlocked;
+    output.status = 'success';
+    finishRun();
+    await nextTick();
+
+    const queued = runtime.queueMessage(agent, 'arrived during final broadcast', { resourceId, threadId }, pubsub);
+    await expect(queued.accepted).resolves.toMatchObject({ action: 'deliver' });
+    expect(agent.stream).not.toHaveBeenCalled();
+
+    releaseBroadcast();
+    await waitForCondition(() => (agent.stream as any).mock.calls.length === 1);
+    expect((agent.stream as any).mock.calls[0]?.[0]).toMatchObject({ contents: 'arrived during final broadcast' });
+  });
+
   it('fans out sequential idle signal runs to many same-thread subscribers', async () => {
     const resourceId = 'share-resource';
     const threadId = 'share-thread';

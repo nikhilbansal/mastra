@@ -120,7 +120,7 @@ function withThreadMemory(memory: unknown, resourceId: string, threadId: string)
   };
 }
 
-type AgentThreadRunLifecycle = 'running' | 'suspending' | 'suspended' | 'completed' | 'failed' | 'aborted';
+type AgentThreadRunLifecycle = 'running' | 'suspending' | 'suspended' | 'settling' | 'completed' | 'failed' | 'aborted';
 
 type AgentThreadRunSuspension = {
   toolCallId?: string;
@@ -527,6 +527,7 @@ export class AgentThreadStreamRuntime {
       record.output.status === 'suspended' ||
       record.lifecycle === 'suspending' ||
       record.lifecycle === 'suspended' ||
+      record.lifecycle === 'settling' ||
       !!record.suspensions?.size ||
       this.#isSuspendedRun(state, record.runId)
     );
@@ -1446,10 +1447,12 @@ export class AgentThreadStreamRuntime {
     // still being acquired).
     const finished = record.output._waitUntilFinished();
     void Promise.allSettled(registered ? [finished, registered] : [finished]).then(async () => {
-      state.watchedThreadStreamIds.delete(record.streamId);
       this.#cleanupPreparedRun(state, record.runId);
 
-      if (record.lifecycle === 'aborted') return;
+      if (record.lifecycle === 'aborted') {
+        state.watchedThreadStreamIds.delete(record.streamId);
+        return;
+      }
 
       if (record.output.status === 'suspended' && this.#isSuspendedRun(state, record.runId)) {
         record.lifecycle = 'suspended';
@@ -1462,24 +1465,12 @@ export class AgentThreadStreamRuntime {
         await Promise.resolve(record.broadcastFinished);
         await this.#releaseActiveStreamLease(pubsub, key, record.runId, record.streamId);
         this.#publish(pubsub, key, { type: 'run-suspended', runId: record.runId, streamId: record.streamId });
+        state.watchedThreadStreamIds.delete(record.streamId);
         return;
       }
 
-      record.lifecycle = 'completed';
+      record.lifecycle = 'settling';
       this.#clearSuspendedRun(state, record.runId);
-      state.threadRunsByStreamId.delete(record.streamId);
-      if (state.threadRunsById.get(record.runId) === record) {
-        state.threadRunsById.delete(record.runId);
-        state.threadKeysByRunId.delete(record.runId);
-      }
-
-      if (
-        state.activeThreadRunIds.get(key) === record.runId &&
-        state.activeThreadStreamIds.get(key) === record.streamId
-      ) {
-        state.activeThreadRunIds.delete(key);
-        state.activeThreadStreamIds.delete(key);
-      }
 
       // If queued follow-up work exists, keep the cross-process lease held by
       // handing it to the next run instead of releasing it: releasing here
@@ -1491,9 +1482,8 @@ export class AgentThreadStreamRuntime {
       // Wait for every stream-part broadcast publish to land before putting the
       // terminal event on the wire: `run-completed` overtaking in-flight parts
       // makes a deferred subscriber flush an empty buffer and drop the late
-      // parts. The stream has already ended here (the run is terminal, not
-      // suspended), so the broadcast pump is guaranteed to settle. Local state
-      // cleanup above stays immediate.
+      // parts. Keep the run reserved while those broadcasts settle so a message
+      // that arrives in this tail window is queued and drained below.
       void Promise.resolve(record.broadcastFinished).then(async () => {
         await this.#releaseActiveStreamLease(pubsub, key, record.runId, record.streamId);
         this.#publish(pubsub, key, {
@@ -1505,6 +1495,20 @@ export class AgentThreadStreamRuntime {
           // persisted message and safe to replay to fresh subscribers.
           persisted: record.output.status === 'success',
         });
+        record.lifecycle = 'completed';
+        state.watchedThreadStreamIds.delete(record.streamId);
+        state.threadRunsByStreamId.delete(record.streamId);
+        if (state.threadRunsById.get(record.runId) === record) {
+          state.threadRunsById.delete(record.runId);
+          state.threadKeysByRunId.delete(record.runId);
+        }
+        if (
+          state.activeThreadRunIds.get(key) === record.runId &&
+          state.activeThreadStreamIds.get(key) === record.streamId
+        ) {
+          state.activeThreadRunIds.delete(key);
+          state.activeThreadStreamIds.delete(key);
+        }
         if (this.#hasPendingThreadWork(state, key)) {
           void this.#drainPendingSignals(state, pubsub, key, record);
         } else {
