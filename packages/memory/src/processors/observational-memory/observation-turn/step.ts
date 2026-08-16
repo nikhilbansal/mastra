@@ -66,6 +66,7 @@ export class ObservationStep {
     if (this._prepared) throw new Error(`Step ${this.stepNumber} already prepared`);
 
     const { threadId, resourceId, messageList } = this.turn;
+    const currentTurnMessageIds = this.turn.captureCurrentTurnMessages();
     // Cast to any for internal access to private OM methods (Turn/Step are internal consumers)
     const om = this.turn.om;
     let activated = false;
@@ -212,8 +213,6 @@ export class ObservationStep {
     // runs at step 0, but ONLY when observation is imminent, so buckets aren't drained on
     // turns where nothing will fire.
     const willObserveNow = statusSnapshot.shouldObserve && !hasIncompleteToolCalls;
-    /** In-flight message ids the step-0 cleanup must never remove from live context. */
-    let step0PreserveIds: string[] | undefined;
     if (this.stepNumber > 0 || willObserveNow) {
       if (this.stepNumber > 0) {
         // Save messages from previous step
@@ -238,11 +237,6 @@ export class ObservationStep {
         if (pending.length > 0) {
           await om.persistMessages(pending, threadId, resourceId);
         }
-        // The in-flight prompt was just observed, but the model still needs it to answer —
-        // protect it (and everything else pending) from cleanup by identity rather than
-        // relying on the token-based retention floor, which resolves to 0 for sync-only,
-        // resource-scope, and explicit `bufferActivation: 1` configs.
-        step0PreserveIds = pending.map(msg => msg.id);
       }
 
       // Step-0 observation: seed an empty assistant message under the active response id
@@ -274,11 +268,7 @@ export class ObservationStep {
           observed = true;
           didThresholdCleanup = true;
 
-          // Cleanup after observation. At step 0 the just-observed messages include the
-          // fresh prompt the model is about to answer — preserve the in-flight messages
-          // by identity (the token-based retention floor resolves to 0 for sync-only,
-          // resource-scope, and explicit `bufferActivation: 1` configs, so it cannot be
-          // relied on to keep them). Step > 0 semantics are unchanged.
+          // Cleanup after observation without removing the in-flight user/tool chain.
           const observedIds = obsResult.activatedMessageIds ?? obsResult.record.observedMessageIds ?? [];
           const minRemaining = resolveRetentionFloor(
             om.getObservationConfig().bufferActivation ?? 1,
@@ -291,7 +281,7 @@ export class ObservationStep {
             messages: messageList,
             observedMessageIds: observedIds,
             retentionFloor: minRemaining,
-            preserveMessageIds: step0PreserveIds,
+            preserveMessageIds: [...currentTurnMessageIds],
           });
 
           if (statusSnapshot.asyncObservationEnabled) {
@@ -336,16 +326,12 @@ export class ObservationStep {
             ?.lastObservedMessageCursor
         : undefined;
 
-      const pendingMessageIds = new Set(
-        [...messageList.get.input.db(), ...messageList.get.response.db()].map(msg => msg.id).filter(Boolean),
-      );
-
       filterObservedMessages({
         messageList,
         record: this.turn.record,
         useMarkerBoundaryPruning: this.stepNumber === 0,
         fallbackCursor,
-        preserveMessageIds: pendingMessageIds,
+        preserveMessageIds: currentTurnMessageIds,
       });
     }
 

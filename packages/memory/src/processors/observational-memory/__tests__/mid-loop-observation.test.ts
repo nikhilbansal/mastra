@@ -278,6 +278,88 @@ describe('Mid-Loop Observation', () => {
       expect(recordAfterStep1?.lastObservedAt).toBeDefined();
     });
 
+    it('preserves the current user and tool chain when observation crosses the threshold on step 2', async () => {
+      const requestContext = createRequestContext(threadId, resourceId);
+      const state: Record<string, unknown> = {};
+      const messageList = new MessageList({ threadId, resourceId });
+      const currentUser = createTestMessage('Build the requested product page.'.padEnd(120, 'u'), 'user', 'turn-user');
+      const firstToolResult: MastraDBMessage = {
+        ...createTestMessage('', 'assistant', 'turn-response'),
+        content: {
+          format: 2,
+          parts: [
+            {
+              type: 'tool-invocation',
+              toolInvocation: {
+                state: 'result',
+                toolCallId: 'tool-call-1',
+                toolName: 'read-product',
+                args: {},
+                result: { summary: 'Product loaded.'.padEnd(160, 'a') },
+              },
+            } as any,
+          ],
+        },
+      };
+      const secondToolResult: MastraDBMessage = {
+        ...createTestMessage('', 'assistant', 'turn-response'),
+        content: {
+          format: 2,
+          parts: [
+            {
+              type: 'tool-invocation',
+              toolInvocation: {
+                state: 'result',
+                toolCallId: 'tool-call-2',
+                toolName: 'update-product',
+                args: {},
+                result: { summary: 'Product updated.'.padEnd(4000, 'z') },
+              },
+            } as any,
+          ],
+        },
+      };
+
+      expect(tokenCounter.countMessages([currentUser, firstToolResult])).toBeLessThan(500);
+      expect(tokenCounter.countMessages([currentUser, firstToolResult, secondToolResult])).toBeGreaterThan(500);
+
+      const runStep = (stepNumber: number) =>
+        processor.processInputStep({
+          messageList,
+          messages: messageList.get.all.db(),
+          requestContext,
+          stepNumber,
+          state,
+          steps: [],
+          systemMessages: [],
+          model: createMockObserverModel() as any,
+          retryCount: 0,
+          abort: createAbort(),
+          abortSignal: new AbortController().signal,
+        });
+
+      messageList.add(currentUser, 'input');
+      await runStep(0);
+      expect((await storage.getObservationalMemory(threadId, resourceId))?.activeObservations).toBeFalsy();
+
+      messageList.add(firstToolResult, 'response');
+      await runStep(1);
+      expect((await storage.getObservationalMemory(threadId, resourceId))?.activeObservations).toBeFalsy();
+
+      messageList.add(secondToolResult, 'response');
+      await runStep(2);
+
+      expect((await storage.getObservationalMemory(threadId, resourceId))?.activeObservations).toBeTruthy();
+      const modelContext = messageList.get.all.db();
+      expect(modelContext.map(message => message.id)).toEqual(expect.arrayContaining(['turn-user', 'turn-response']));
+      const toolCallIds = modelContext.flatMap(message =>
+        message.content.parts.flatMap(part =>
+          part.type === 'tool-invocation' ? [part.toolInvocation.toolCallId] : [],
+        ),
+      );
+      expect(toolCallIds).toEqual(expect.arrayContaining(['tool-call-1', 'tool-call-2']));
+    });
+
     it('should rotate the response message id after synchronous observation persists', async () => {
       const requestContext = createRequestContext(threadId, resourceId);
       const state: Record<string, unknown> = {};

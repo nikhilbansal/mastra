@@ -44,6 +44,9 @@ export class ObservationTurn {
   private _started = false;
   private _ended = false;
 
+  /** Input and response messages created during this turn must remain in model context until it ends. */
+  private readonly _currentTurnMessageIds = new Set<string>();
+
   /** Generation count at turn start — used to detect if reflection happened during the turn. */
   private _generationCountAtStart = -1;
 
@@ -120,6 +123,13 @@ export class ObservationTurn {
     return this._currentStep;
   }
 
+  captureCurrentTurnMessages(): Set<string> {
+    for (const message of [...this.messageList.get.input.db(), ...this.messageList.get.response.db()]) {
+      this._currentTurnMessageIds.add(message.id);
+    }
+    return this._currentTurnMessageIds;
+  }
+
   addHooks(hooks?: ObservationTurnHooks): void {
     if (!hooks) return;
     Object.assign(this.hooks, hooks);
@@ -134,6 +144,7 @@ export class ObservationTurn {
   async start(memory?: MemoryContextProvider): Promise<TurnContext> {
     if (this._started) throw new Error('Turn already started');
     this._started = true;
+    this.captureCurrentTurnMessages();
 
     this._record = await this.om.getOrCreateRecord(this.threadId, this.resourceId);
     this._generationCountAtStart = this._record.generationCount;
