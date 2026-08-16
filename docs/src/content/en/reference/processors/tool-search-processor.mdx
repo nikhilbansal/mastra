@@ -88,7 +88,7 @@ const toolSearch = new ToolSearchProcessor({
             name: 'storage',
             type: "'in-memory' | 'context'",
             description:
-              "Where loaded-tool state lives. 'in-memory' (default) tracks loaded tools in an in-memory map per thread with TTL cleanup (see ttl); state is lost on restart and anonymous requests share a 'default' entry. 'context' derives loaded state from the conversation messages — a tool is loaded while a search_tools/load_tool result naming it remains in the messages; it is restart-safe, requires no memory, and de-loads automatically once that result is no longer present in the messages. The 'context' store is opt-in.",
+              "Where loaded-tool state lives. 'in-memory' (default) tracks loaded tools in an in-memory map per thread with TTL cleanup (see ttl); state is lost on restart and anonymous requests share a 'default' entry. 'context' derives loaded state from the conversation messages — a tool is loaded while a completed direct invocation or a search_tools/load_tool result naming it remains in the messages; it is restart-safe, requires no memory, and de-loads automatically once those records are no longer present in the messages. The 'context' store is opt-in.",
             isOptional: true,
             default: "'in-memory'",
           },
@@ -321,11 +321,11 @@ Use `clearState`, `clearAllState`, `getStateStats`, and `cleanupNow` to inspect 
 
 ### `'context'`
 
-Loaded state is derived from the conversation messages: a tool is loaded while a `search_tools` or `load_tool` result naming it remains in the messages. This mode:
+Loaded state is derived from the conversation messages: a tool is loaded while a completed direct invocation, or a `search_tools` or `load_tool` result naming it, remains in the messages. This mode:
 
 - Requires no memory configuration.
 - Is restart-safe: the durable record is the persisted message history.
-- De-loads a tool automatically once that result is no longer present in the messages.
+- De-loads a tool automatically once neither record is present in the messages.
 
 ```typescript
 import { ToolSearchProcessor } from '@mastra/core/processors'
@@ -338,7 +338,7 @@ const toolSearch = new ToolSearchProcessor({
 
 Loading tools is cache-friendly in both modes: loads are append-only, so the cached prompt prefix stays stable for providers that support prompt caching.
 
-Unloading a tool changes the tool definitions sent to the model, which shifts the cached prefix and causes the next turn to pay a cache write instead of a cache hit. In `'in-memory'` mode this happens when a thread's state is evicted by `ttl`. In `'context'` mode it happens when a tool's discovery result is no longer present in the messages (for example, when older messages are trimmed). The tool de-loads, and the model must search for it again before reuse. This is expected: removing an unused tool trades one cache write for a smaller prefix on later turns.
+Unloading a tool changes the tool definitions sent to the model, which shifts the cached prefix and causes the next turn to pay a cache write instead of a cache hit. In `'in-memory'` mode this happens when a thread's state is evicted by `ttl`. In `'context'` mode it happens when neither a discovery result nor a completed direct invocation for the tool remains in the messages (for example, when older messages are trimmed). The tool de-loads, and the model must search for it again before reuse. This is expected: removing an unused tool trades one cache write for a smaller prefix on later turns.
 
 ## Combining with other processors
 

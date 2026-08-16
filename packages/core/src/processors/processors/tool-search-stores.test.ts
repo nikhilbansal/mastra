@@ -5,10 +5,10 @@ import { deriveLoadedNamesFromMessages, LegacyMapLoadedToolStore, ContextLoadedT
 
 /**
  * Build a minimal ProcessInputStepArgs carrying conversation messages with the
- * given search_tools / load_tool tool-invocation results.
+ * given completed tool-invocation results.
  */
 function argsWithMessages(
-  invocations: Array<{ toolName: 'search_tools' | 'load_tool'; result: unknown }>,
+  invocations: Array<{ toolName: string; result: unknown; state?: 'call' | 'result' }>,
 ): ProcessInputStepArgs {
   return {
     messages: [
@@ -20,7 +20,7 @@ function argsWithMessages(
           parts: invocations.map((inv, i) => ({
             type: 'tool-invocation' as const,
             toolInvocation: {
-              state: 'result' as const,
+              state: inv.state ?? ('result' as const),
               toolCallId: `call-${i}`,
               toolName: inv.toolName,
               args: {},
@@ -46,12 +46,23 @@ describe('deriveLoadedNamesFromMessages', () => {
     expect([...deriveLoadedNamesFromMessages(args)]).toEqual(['github_create_issue']);
   });
 
-  it('unions across multiple invocations and ignores other tools', () => {
+  it('reads a completed direct invocation as loaded', () => {
+    const args = argsWithMessages([{ toolName: 'send_email', result: { sent: true } }]);
+    expect([...deriveLoadedNamesFromMessages(args)]).toEqual(['send_email']);
+  });
+
+  it('ignores an incomplete direct invocation', () => {
+    const args = argsWithMessages([{ toolName: 'send_email', result: undefined, state: 'call' }]);
+    expect(deriveLoadedNamesFromMessages(args).size).toBe(0);
+  });
+
+  it('unions across discovery and direct invocations', () => {
     const args = argsWithMessages([
       { toolName: 'search_tools', result: { results: [{ name: 'weather' }] } },
       { toolName: 'load_tool', result: { loaded: ['calendar'] } },
+      { toolName: 'send_email', result: { sent: true } },
     ]);
-    expect([...deriveLoadedNamesFromMessages(args)].sort()).toEqual(['calendar', 'weather']);
+    expect([...deriveLoadedNamesFromMessages(args)].sort()).toEqual(['calendar', 'send_email', 'weather']);
   });
 
   it('returns empty when messages are missing', () => {

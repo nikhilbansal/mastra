@@ -85,11 +85,9 @@ export interface ToolSearchProcessorOptions {
    * - `'in-memory'` (default): the original behavior — loaded state lives in an
    *   in-memory `Map<threadId, Set>` with TTL cleanup (see `ttl`). Lost on restart;
    *   anonymous requests share a `'default'` entry.
-   * - `'context'`: derived from the conversation messages. A tool is loaded iff a
-   *   prior `search_tools`/`load_tool` result naming it is still present in the
-   *   conversation. Restart-safe, requires no memory, and de-loads automatically
-   *   when the result block is no longer present in the messages — parity with
-   *   native provider tool-search.
+   * - `'context'`: derived from conversation messages. A tool remains loaded while
+   *   a completed direct invocation or discovery result for it is present.
+   *   Restart-safe, requires no memory, and de-loads with that history.
    *
    * @default 'in-memory'
    */

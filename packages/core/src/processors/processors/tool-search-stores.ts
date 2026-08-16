@@ -61,8 +61,8 @@ function extractActivatedNames(result: unknown): string[] {
 }
 
 /**
- * Scans conversation messages for completed `search_tools` / `load_tool` invocations
- * and unions the tool names they activated.
+ * Scans completed tool invocations: discovery results activate named tools, while
+ * direct invocations keep their own searchable tool available.
  */
 export function deriveLoadedNamesFromMessages(args: ProcessInputStepArgs, threadId?: string): Set<string> {
   const loaded = new Set<string>();
@@ -78,11 +78,14 @@ export function deriveLoadedNamesFromMessages(args: ProcessInputStepArgs, thread
       if (part.type !== 'tool-invocation') continue;
       const invocation = part.toolInvocation;
       if (!invocation) continue;
-      if (invocation.toolName !== 'search_tools' && invocation.toolName !== 'load_tool') continue;
       if (invocation.state !== 'result') continue;
 
-      for (const name of extractActivatedNames(invocation.result)) {
-        loaded.add(name);
+      if (invocation.toolName === 'search_tools' || invocation.toolName === 'load_tool') {
+        for (const name of extractActivatedNames(invocation.result)) {
+          loaded.add(name);
+        }
+      } else if (invocation.toolName) {
+        loaded.add(invocation.toolName);
       }
     }
   }
@@ -92,8 +95,8 @@ export function deriveLoadedNamesFromMessages(args: ProcessInputStepArgs, thread
 
 /**
  * 'context' mode store. The conversation messages are the source of truth — a tool
- * is loaded iff a `search_tools`/`load_tool` result naming it is still present in
- * `args.messages`.
+ * is loaded iff a completed invocation that discovers or directly calls it is
+ * still present in `args.messages`.
  *
  * A small same-process supplemental set (keyed by real thread ID) bridges the gap
  * between a tool being activated during `execute` and that result becoming visible
