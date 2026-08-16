@@ -19,6 +19,7 @@
 import { describe, expect, it, vi } from 'vitest';
 import { z } from 'zod/v4';
 import { Mastra } from '../../mastra';
+import { MockMemory } from '../../memory/mock';
 import { ToolSearchProcessor } from '../../processors';
 import type { ProcessInputStepArgs, Processor } from '../../processors';
 import { ProcessorStepInputSchema, ProcessorStepOutputSchema } from '../../processors/step-schema';
@@ -407,6 +408,170 @@ describe('resumeStream with input processors', () => {
 });
 
 describe('tool approval with ToolSearchProcessor', () => {
+  it('persists custom data from a dynamically loaded tool before suspension and after thread resume', async () => {
+    const storage = new InMemoryStore();
+    const memory = new MockMemory({ storage });
+    const dynamicReceiptTool = createTool({
+      id: 'dynamic_resume_receipt',
+      description: 'Emit a receipt before and after resuming a user selection',
+      inputSchema: z.object({}),
+      suspendSchema: z.object({ prompt: z.string() }),
+      resumeSchema: z.object({ selected: z.array(z.string()) }),
+      execute: async (_input, context) => {
+        const resumeData = context?.agent?.resumeData;
+        await context?.writer?.custom({
+          type: 'data-receipt',
+          data: { phase: resumeData ? 'updated' : 'created' },
+        });
+        if (!resumeData) {
+          return context?.agent?.suspend({ prompt: 'Choose an item' });
+        }
+        return { selected: resumeData.selected };
+      },
+    });
+
+    let modelCallCount = 0;
+    const mockModel = new MockLanguageModelV2({
+      doStream: async () => {
+        modelCallCount++;
+        if (modelCallCount === 1) {
+          return {
+            rawCall: { rawPrompt: null, rawSettings: {} },
+            warnings: [],
+            stream: convertArrayToReadableStream([
+              { type: 'stream-start', warnings: [] },
+              { type: 'response-metadata', id: 'id-search', modelId: 'mock-model-id', timestamp: new Date(0) },
+              {
+                type: 'tool-call',
+                toolCallId: 'search-call',
+                toolName: 'search_tools',
+                input: JSON.stringify({ query: 'resume receipt' }),
+                providerExecuted: false,
+              },
+              {
+                type: 'finish',
+                finishReason: 'tool-calls',
+                usage: { inputTokens: 10, outputTokens: 5, totalTokens: 15 },
+              },
+            ]),
+          };
+        }
+        if (modelCallCount === 2) {
+          return {
+            rawCall: { rawPrompt: null, rawSettings: {} },
+            warnings: [],
+            stream: convertArrayToReadableStream([
+              { type: 'stream-start', warnings: [] },
+              { type: 'response-metadata', id: 'id-tool', modelId: 'mock-model-id', timestamp: new Date(0) },
+              {
+                type: 'tool-call',
+                toolCallId: 'receipt-call',
+                toolName: 'dynamic_resume_receipt',
+                input: '{}',
+                providerExecuted: false,
+              },
+              {
+                type: 'finish',
+                finishReason: 'tool-calls',
+                usage: { inputTokens: 15, outputTokens: 5, totalTokens: 20 },
+              },
+            ]),
+          };
+        }
+        return {
+          rawCall: { rawPrompt: null, rawSettings: {} },
+          warnings: [],
+          stream: convertArrayToReadableStream([
+            { type: 'stream-start', warnings: [] },
+            { type: 'response-metadata', id: 'id-complete', modelId: 'mock-model-id', timestamp: new Date(0) },
+            { type: 'text-start', id: 'text-1' },
+            { type: 'text-delta', id: 'text-1', delta: 'Selection saved.' },
+            { type: 'text-end', id: 'text-1' },
+            {
+              type: 'finish',
+              finishReason: 'stop',
+              usage: { inputTokens: 20, outputTokens: 5, totalTokens: 25 },
+            },
+          ]),
+        };
+      },
+    });
+
+    const userAgent = new Agent({
+      id: 'dynamic-resume-receipt-agent',
+      name: 'Dynamic Resume Receipt Agent',
+      instructions: 'Discover and use the receipt tool.',
+      model: mockModel,
+      memory,
+      inputProcessors: [
+        new ToolSearchProcessor({
+          tools: { dynamic_resume_receipt: dynamicReceiptTool },
+          search: { autoLoad: true, minScore: 0, topK: 3 },
+        }),
+      ],
+    });
+    const mastra = new Mastra({ agents: { userAgent }, logger: false, storage });
+    const agent = mastra.getAgent('userAgent');
+    const threadId = 'dynamic-resume-receipt-thread';
+    const resourceId = 'dynamic-resume-receipt-resource';
+    const chunks: any[] = [];
+    const subscription = await agent.subscribeToThread({ threadId, resourceId });
+    const consumeSubscription = (async () => {
+      for await (const chunk of subscription.stream) {
+        chunks.push(chunk);
+      }
+    })();
+
+    try {
+      await agent.stream('Save my selection', {
+        maxSteps: 6,
+        memory: { thread: threadId, resource: resourceId },
+      });
+
+      await vi.waitFor(
+        () => {
+          expect(chunks.some(chunk => chunk.type === 'tool-call-suspended')).toBe(true);
+          expect(chunks.filter(chunk => chunk.type === 'data-receipt').map(chunk => chunk.data?.phase)).toEqual([
+            'created',
+          ]);
+        },
+        { timeout: 10_000 },
+      );
+
+      await agent.sendToolApproval({
+        threadId,
+        resourceId,
+        toolCallId: 'receipt-call',
+        approved: true,
+        resumeData: { selected: ['item-1'] },
+      });
+
+      await vi.waitFor(
+        () => {
+          expect(chunks.filter(chunk => chunk.type === 'data-receipt').map(chunk => chunk.data?.phase)).toEqual([
+            'created',
+            'updated',
+          ]);
+          expect(chunks.some(chunk => chunk.type === 'finish' && chunk.payload.stepResult?.reason === 'stop')).toBe(
+            true,
+          );
+        },
+        { timeout: 10_000 },
+      );
+
+      const recalled = await memory.recall({ threadId, resourceId });
+      const persistedPhases = recalled.messages.flatMap(message =>
+        message.content.parts.flatMap(part =>
+          part.type === 'data-receipt' ? [(part.data as { phase?: string } | undefined)?.phase ?? ''] : [],
+        ),
+      );
+      expect(persistedPhases).toEqual(['created', 'updated']);
+    } finally {
+      subscription.unsubscribe();
+      await consumeSubscription;
+    }
+  }, 30_000);
+
   const expectDynamicallyLoadedToolAfterApprovalResume = async ({
     toolId,
     agentId,

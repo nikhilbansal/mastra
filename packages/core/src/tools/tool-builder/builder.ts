@@ -652,7 +652,7 @@ export class CoreToolBuilder extends MastraBase {
                 name: options.name,
                 runId: options.runId!,
               },
-              options.outputWriter || execOptions.outputWriter,
+              execOptions.outputWriter || options.outputWriter,
             ),
             ...createObservabilityContext({ currentSpan: toolSpan }),
             abortSignal: execOptions.abortSignal,
@@ -699,7 +699,7 @@ export class CoreToolBuilder extends MastraBase {
                 resumeData,
                 threadId,
                 resourceId,
-                outputWriter: options.outputWriter || execOptions.outputWriter,
+                outputWriter: execOptions.outputWriter || options.outputWriter,
                 flushMessages: execOptions.flushMessages,
               },
             };

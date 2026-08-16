@@ -10,6 +10,42 @@ import { createTool } from '../../tools';
 import { isProviderDefinedTool, isVercelTool } from '../toolchecks';
 import { CoreToolBuilder } from './builder';
 
+describe('CoreToolBuilder output writer', () => {
+  it('uses the current execution writer instead of a stale build-time writer', async () => {
+    const buildTimeWriter = vi.fn();
+    const executionWriter = vi.fn();
+    const testTool = createTool({
+      id: 'resume-receipt',
+      description: 'Emits a receipt after a suspended tool resumes',
+      inputSchema: z.object({}),
+      execute: async (_input, context) => {
+        await context?.writer?.custom({ type: 'data-receipt', data: { status: 'updated' } });
+        await context?.agent?.outputWriter?.({ type: 'data-agent-receipt', data: { status: 'updated' } });
+        return { result: 'ok' };
+      },
+    });
+    const builder = new CoreToolBuilder({
+      originalTool: testTool,
+      options: {
+        name: 'resume-receipt',
+        agentId: 'agent-1',
+        agentName: 'Agent 1',
+        runId: 'run-1',
+        threadId: 'thread-1',
+        logger: noopLogger,
+        requestContext: new RequestContext(),
+        outputWriter: buildTimeWriter,
+      },
+    });
+
+    const builtTool = builder.build();
+    await builtTool.execute!({}, { toolCallId: 'call-1', messages: [], outputWriter: executionWriter });
+
+    expect(executionWriter).toHaveBeenCalledTimes(2);
+    expect(buildTimeWriter).not.toHaveBeenCalled();
+  });
+});
+
 describe('CoreToolBuilder FGA', () => {
   it('executes tools without FGA when only auth/server config is present', async () => {
     const execute = vi.fn().mockResolvedValue({ result: 'ok' });
