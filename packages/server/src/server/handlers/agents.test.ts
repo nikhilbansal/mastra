@@ -2369,6 +2369,64 @@ describe('Agent Routes Authorization', () => {
       });
     });
 
+    it.each([
+      { route: SEND_AGENT_MESSAGE_ROUTE, method: 'sendMessage', target: 'thread' },
+      { route: SEND_AGENT_MESSAGE_ROUTE, method: 'sendMessage', target: 'run' },
+    ] as const)('maps a discarded $method $target target to agent_thread_busy', async ({ route, method, target }) => {
+      if (target === 'thread') {
+        await mockMemory.createThread({
+          threadId: 'busy-message-thread',
+          resourceId: 'user-a',
+          title: 'Busy Message Thread',
+        });
+      }
+      (mockAgent as any)[method] = vi.fn(() => ({
+        accepted: Promise.resolve({ action: 'discard' }),
+        persisted: Promise.resolve(),
+        signal: { id: 'discarded-signal-id' },
+      }));
+
+      await expect(
+        (route.handler as any)({
+          mastra,
+          agentId: 'test-agent',
+          requestContext: createContextWithReservedKeys({ resourceId: 'user-a' }),
+          message: 'do not accept while busy',
+          ifActive: { behavior: 'discard' },
+          ...(target === 'run' ? { runId: 'busy-run-id' } : { resourceId: 'user-a', threadId: 'busy-message-thread' }),
+        }),
+      ).rejects.toMatchObject({ status: 409, message: 'agent_thread_busy' });
+    });
+
+    it('preserves explicit idle discard semantics for sendMessage', async () => {
+      await mockMemory.createThread({
+        threadId: 'idle-discard-message-thread',
+        resourceId: 'user-a',
+        title: 'Idle Discard Message Thread',
+      });
+      (mockAgent as any).sendMessage = vi.fn(() => ({
+        accepted: Promise.resolve({ action: 'discard' }),
+        signal: { id: 'idle-discarded-signal-id' },
+      }));
+
+      await expect(
+        (SEND_AGENT_MESSAGE_ROUTE.handler as any)({
+          mastra,
+          agentId: 'test-agent',
+          requestContext: createContextWithReservedKeys({ resourceId: 'user-a' }),
+          message: 'discard while idle',
+          resourceId: 'user-a',
+          threadId: 'idle-discard-message-thread',
+          ifActive: { behavior: 'discard' },
+          ifIdle: { behavior: 'discard' },
+        }),
+      ).resolves.toEqual({
+        accepted: true,
+        runId: 'idle-discarded-signal-id',
+        signal: { id: 'idle-discarded-signal-id' },
+      });
+    });
+
     it('should merge idle stream request context before waking a thread with a signal', async () => {
       await mockMemory.createThread({
         threadId: 'signal-thread-with-context',

@@ -1396,5 +1396,58 @@ describe('MastraModelOutput', () => {
       expect(outcome).toBe('settled');
       expect(output.status).toBe('failed');
     });
+
+    it('closes fullStream without duplicating an earlier error chunk when the source then fails', async () => {
+      const runId = 'test-run';
+      const messageList = new MessageList({ threadId: 'test-thread' });
+      const providerError = new Error('provider connection error');
+      const sourceError = new Error('source drain error');
+      let sourceController!: ReadableStreamDefaultController<ChunkType>;
+      const stream = new ReadableStream<ChunkType>({
+        start(controller) {
+          sourceController = controller;
+        },
+      });
+
+      const output = new MastraModelOutput({
+        model: { modelId: 'test-model', provider: 'test', version: 'v3' },
+        stream,
+        messageList,
+        messageId: 'msg-1',
+        options: { runId },
+      });
+
+      const chunks: ChunkType[] = [];
+      const reader = output.fullStream.getReader();
+      const firstRead = reader.read();
+      sourceController.enqueue({
+        type: 'error',
+        runId,
+        from: ChunkFrom.AGENT,
+        payload: { error: providerError },
+      } as ChunkType);
+      const firstResult = await firstRead;
+      expect(firstResult.done).toBe(false);
+      if (!firstResult.done) chunks.push(firstResult.value);
+
+      const consume = (async () => {
+        while (true) {
+          const result = await reader.read();
+          if (result.done) return;
+          chunks.push(result.value);
+        }
+      })();
+      sourceController.error(sourceError);
+
+      const outcome = await Promise.race([
+        consume.then(() => 'closed' as const),
+        new Promise<'hung'>(resolve => setTimeout(() => resolve('hung'), 500)),
+      ]);
+
+      expect(outcome).toBe('closed');
+      expect(chunks.filter(chunk => chunk.type === 'error')).toHaveLength(1);
+      expect(output.status).toBe('failed');
+      expect(output.error).toBe(providerError);
+    });
   });
 });

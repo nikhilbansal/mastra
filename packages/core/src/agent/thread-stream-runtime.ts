@@ -2881,6 +2881,12 @@ export class AgentThreadStreamRuntime {
     }
 
     if (state.activeThreadRunIds.has(key)) {
+      if (activeBehavior === 'discard') {
+        return {
+          signal,
+          accepted: Promise.resolve({ action: 'discard' as const }),
+        };
+      }
       const blockingRunId = state.activeThreadRunIds.get(key)!;
       const blockingRecord = activeRecord ?? state.threadRunsById.get(blockingRunId);
       if (
@@ -2932,13 +2938,19 @@ export class AgentThreadStreamRuntime {
     // the idle stream so concurrent callers do not launch duplicate runs.
     state.activeThreadRunIds.set(key, runId);
     state.threadKeysByRunId.set(runId, key);
-    const persisted = this.#persistAcceptedUserSignal(
-      agent,
-      signal,
-      resourceId,
-      threadId,
-      target.ifIdle?.streamOptions?.requestContext,
-    );
+    // `ifActive: discard` is an atomic admission policy across replicas. Delay
+    // persistence until this runtime wins the lease; a lease loss means the
+    // thread was active elsewhere and must leave no stored or published turn.
+    const persisted =
+      activeBehavior === 'discard'
+        ? undefined
+        : this.#persistAcceptedUserSignal(
+            agent,
+            signal,
+            resourceId,
+            threadId,
+            target.ifIdle?.streamOptions?.requestContext,
+          );
     const reservedKey = key;
     const reservedRunId = runId;
     const resolvedPubSub = this.#getPubSub(pubsub);
@@ -2948,8 +2960,10 @@ export class AgentThreadStreamRuntime {
     // signal off to the winning process via signal-enqueued and resolve a `deliver` result
     // (the signal was queued onto the winning run, not run locally).
     const accepted: Promise<SendAgentSignalAccepted<OUTPUT>> = (async () => {
-      // Fail-open on pubsub errors: if the lease backend is unreachable we treat the
-      // call as "acquired" so the caller still gets a response. The tradeoff is that
+      // Deliver/persist callers retain the legacy fail-open behavior on pubsub
+      // errors so the caller still gets a response. `ifActive: discard` fails
+      // closed instead: an ambiguous acquire must not store or start a second
+      // turn. The tradeoff for the legacy path is that
       // if multiple processes hit the same pubsub failure simultaneously they can each
       // start a stream for the same thread (the bug this lease is supposed to prevent),
       // but failing closed would silently drop user messages on any Redis blip which
@@ -2957,7 +2971,11 @@ export class AgentThreadStreamRuntime {
       // window to a single run, and the next clean acquireLease re-serializes callers.
       const lease = await leaseProvider
         .acquireLease(reservedKey, reservedRunId, AGENT_THREAD_LEASE_TTL_MS)
-        .catch(() => ({ acquired: true as boolean, owner: reservedRunId as string | undefined }));
+        .catch(() =>
+          activeBehavior === 'discard'
+            ? { acquired: false as boolean, owner: undefined as string | undefined }
+            : { acquired: true as boolean, owner: reservedRunId as string | undefined },
+        );
 
       if (!lease.acquired) {
         // Lost the wake race to another process. Roll back our optimistic local reservation
@@ -2967,6 +2985,11 @@ export class AgentThreadStreamRuntime {
         }
         state.threadKeysByRunId.delete(reservedRunId);
         state.preRunSignalsByThread.delete(reservedKey);
+
+        if (activeBehavior === 'discard') {
+          await leaseProvider.releaseLease(reservedKey, reservedRunId).catch(() => {});
+          return { action: 'discard' as const };
+        }
 
         // Forward the user signal to the winning runId so the message is not dropped.
         // Await the publish so that callers using `accepted` resolution as their
@@ -2988,7 +3011,14 @@ export class AgentThreadStreamRuntime {
       // that outlive the TTL, then kick off the stream.
       this.#startLeaseRenewal(resolvedPubSub, reservedKey, reservedRunId);
       try {
-        await persisted;
+        await (persisted ??
+          this.#persistAcceptedUserSignal(
+            agent,
+            signal,
+            resourceId,
+            threadId,
+            target.ifIdle?.streamOptions?.requestContext,
+          ));
         const output = await agent.stream(signal, {
           ...(target.ifIdle?.streamOptions as any),
           untilIdle: true,

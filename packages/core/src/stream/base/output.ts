@@ -16,6 +16,7 @@ import { ProcessorState, ProcessorRunner } from '../../processors/runner';
 import type { WorkflowRunStatus } from '../../workflows';
 import { DelayedPromise, consumeStream } from '../aisdk/v5/compat';
 import type { ConsumeStreamOptions } from '../aisdk/v5/compat';
+import { ChunkFrom } from '../types';
 import type {
   ChunkType,
   LanguageModelUsage,
@@ -1562,6 +1563,39 @@ export class MastraModelOutput<OUTPUT = undefined> extends MastraBase {
         onError: error => {
           this.#consumeStreamErrored = true;
           this.#consumeStreamError = error;
+          if (this.#streamFinished) {
+            // A terminal error chunk settles run waiters without closing observer
+            // streams, because recovery may still produce more chunks. If the
+            // underlying source subsequently fails, recovery is no longer possible:
+            // close those observers, but do not emit a second error chunk.
+            this.#closeTransportIfNeeded();
+            this.#emitter.emit('finish');
+            return;
+          }
+
+          const streamError = getErrorFromUnknown(error, {
+            fallbackMessage: 'Unknown error consuming model output stream',
+          });
+          this.#error = streamError;
+          this.#status = 'failed';
+          this.#finishReason = 'error';
+          this.#streamFinished = true;
+
+          Object.values(this.#delayedPromises).forEach(promise => {
+            if (promise.status.type === 'pending') {
+              promise.reject(streamError);
+            }
+          });
+
+          this.#closeTransportIfNeeded();
+          this.#emitChunk({
+            type: 'error',
+            runId: this.runId,
+            from: ChunkFrom.AGENT,
+            payload: { error: streamError },
+          });
+          this.#emitter.emit('settled');
+          this.#emitter.emit('finish');
         },
         logger: this.logger,
       });

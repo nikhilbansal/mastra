@@ -1883,6 +1883,12 @@ function handleSignalRoutingError(error: unknown, defaultMessage: string): never
   return handleError(error, defaultMessage);
 }
 
+function rejectBusyAgentMessage(discardMeansBusy: boolean, settled: { action?: string } | undefined): void {
+  if (discardMeansBusy && settled?.action === 'discard') {
+    throw new HTTPException(409, { message: 'agent_thread_busy' });
+  }
+}
+
 async function ensureWritableMemoryThread({
   agent,
   requestContext,
@@ -2126,6 +2132,8 @@ async function handleAgentMessageRoute({
       streamOptions: { ...(normalizedIdleStreamOptions ?? {}), requestContext: serverRequestContext } as any,
     },
   };
+  const discardMeansBusy =
+    ifActive?.behavior === 'discard' && (runId !== undefined || (ifIdle?.behavior ?? 'wake') === 'wake');
 
   await ensureWritableMemoryThread({
     agent,
@@ -2156,6 +2164,7 @@ async function handleAgentMessageRoute({
       ...(ifActive ? { ifActive } : {}),
     } as any);
     const settled = await result.accepted;
+    rejectBusyAgentMessage(discardMeansBusy, settled);
     await result.persisted;
     const settledRunId: string = settled && 'runId' in settled ? settled.runId : runId;
     return result.signal === undefined
@@ -2174,6 +2183,7 @@ async function handleAgentMessageRoute({
     ...ifIdleWithContext,
   } as any);
   const settled = await result.accepted;
+  rejectBusyAgentMessage(discardMeansBusy, settled);
   await result.persisted;
   const settledRunId: string = settled && 'runId' in settled ? settled.runId : result.signal?.id;
   return result.signal === undefined

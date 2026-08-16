@@ -4124,6 +4124,133 @@ describe('Agent signals', () => {
     expect(JSON.stringify(prompts)).not.toContain('discard while running');
   });
 
+  it('discards sendMessage while a local run is still reserved', async () => {
+    const runtime = new AgentThreadStreamRuntime();
+    const pubsub = new ControlledLeasePubSub();
+    const requestContext = new RequestContext();
+    requestContext.set('mode', 'direct');
+    const saveMessages = vi.fn(async () => undefined);
+    const getMemory = vi.fn(async () => ({ saveMessages }));
+    const stream = vi.fn(async (_signal, options: any) => ({ runId: options.runId }));
+    const agent = { id: 'reserved-discard-agent', getMemory, stream } as any;
+
+    const first = runtime.sendSignal(
+      agent,
+      createSignal({ type: 'user-message', contents: 'first' }),
+      {
+        resourceId: 'reserved-discard-user',
+        threadId: 'reserved-discard-thread',
+        ifIdle: { streamOptions: { requestContext } },
+      },
+      pubsub,
+    );
+    const discarded = runtime.sendMessage(
+      agent,
+      'second',
+      {
+        resourceId: 'reserved-discard-user',
+        threadId: 'reserved-discard-thread',
+        ifActive: { behavior: 'discard' },
+      },
+      pubsub,
+    );
+
+    await expect(discarded.accepted).resolves.toEqual({ action: 'discard' });
+    await expect(first.accepted).resolves.toMatchObject({ action: 'wake' });
+    expect(getMemory).toHaveBeenCalledOnce();
+    expect(saveMessages).toHaveBeenCalledOnce();
+    expect(stream).toHaveBeenCalledOnce();
+    expect(stream.mock.calls[0]?.[1].requestContext).toBe(requestContext);
+  });
+
+  it('atomically discards sendMessage when another runtime owns the lease', async () => {
+    const runtime = new AgentThreadStreamRuntime();
+    const pubsub = new ControlledLeasePubSub();
+    const resourceId = 'remote-discard-user';
+    const threadId = 'remote-discard-thread';
+    pubsub.owners.set(`${resourceId}\u0000${threadId}`, 'remote-owner');
+    const saveMessages = vi.fn(async () => undefined);
+    const getMemory = vi.fn(async () => ({ saveMessages }));
+    const stream = vi.fn();
+    const agent = { id: 'remote-discard-agent', getMemory, stream } as any;
+
+    const sent = runtime.sendMessage(
+      agent,
+      'send while remote active',
+      { resourceId, threadId, ifActive: { behavior: 'discard' } },
+      pubsub,
+    );
+    await expect(sent.accepted).resolves.toEqual({ action: 'discard' });
+    expect(sent.persisted).toBeUndefined();
+    expect(getMemory).not.toHaveBeenCalled();
+    expect(saveMessages).not.toHaveBeenCalled();
+    expect(stream).not.toHaveBeenCalled();
+    expect(pubsub.publishedData.some(event => event?.type === 'signal-enqueued')).toBe(false);
+  });
+
+  it('discards and releases an ambiguous lease acquire failure without persisting', async () => {
+    const runtime = new AgentThreadStreamRuntime();
+    const pubsub = new (class extends ControlledLeasePubSub {
+      override async acquireLease(key: string, owner: string): Promise<{ acquired: boolean; owner?: string }> {
+        this.owners.set(key, owner);
+        throw new Error('lease response lost');
+      }
+    })();
+    const resourceId = 'ambiguous-discard-user';
+    const threadId = 'ambiguous-discard-thread';
+    const key = `${resourceId}\u0000${threadId}`;
+    const saveMessages = vi.fn(async () => undefined);
+    const getMemory = vi.fn(async () => ({ saveMessages }));
+    const stream = vi.fn();
+    const agent = { id: 'ambiguous-discard-agent', getMemory, stream } as any;
+
+    const sent = runtime.sendMessage(
+      agent,
+      'discard on ambiguous lease',
+      { resourceId, threadId, ifActive: { behavior: 'discard' } },
+      pubsub,
+    );
+
+    await expect(sent.accepted).resolves.toEqual({ action: 'discard' });
+    expect(pubsub.owners.has(key)).toBe(false);
+    expect(getMemory).not.toHaveBeenCalled();
+    expect(saveMessages).not.toHaveBeenCalled();
+    expect(stream).not.toHaveBeenCalled();
+    expect(pubsub.publishedData).toHaveLength(0);
+  });
+
+  it('wakes an idle lease winner with the exact local RequestContext under discard policy', async () => {
+    const runtime = new AgentThreadStreamRuntime();
+    const pubsub = new ControlledLeasePubSub();
+    const requestContext = new RequestContext();
+    const localOnly = () => 'kept locally';
+    requestContext.set('localOnly', localOnly);
+    const saveMessages = vi.fn(async () => undefined);
+    const getMemory = vi.fn(async () => ({ saveMessages }));
+    const stream = vi.fn(async (_signal, options: any) => ({ runId: options.runId }));
+    const agent = { id: 'idle-discard-agent', getMemory, stream } as any;
+
+    const sent = runtime.sendMessage(
+      agent,
+      'idle winner',
+      {
+        resourceId: 'idle-discard-user',
+        threadId: 'idle-discard-thread',
+        ifActive: { behavior: 'discard' },
+        ifIdle: { streamOptions: { requestContext, maxSteps: 4 } },
+      },
+      pubsub,
+    );
+
+    await expect(sent.accepted).resolves.toMatchObject({ action: 'wake' });
+    expect(getMemory).toHaveBeenCalledOnce();
+    expect(saveMessages).toHaveBeenCalledOnce();
+    expect(stream).toHaveBeenCalledOnce();
+    expect(stream.mock.calls[0]?.[1]).toMatchObject({ maxSteps: 4 });
+    expect(stream.mock.calls[0]?.[1].requestContext).toBe(requestContext);
+    expect(stream.mock.calls[0]?.[1].requestContext.get('localOnly')).toBe(localOnly);
+  });
+
   it('uses lease ownership as the authority for remote active thread state', async () => {
     const agent = { id: 'lease-authority-agent' } as Agent<any, any, any, any>;
     const key = 'lease-authority-resource\u0000lease-authority-thread';
