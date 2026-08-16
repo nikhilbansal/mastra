@@ -2562,8 +2562,10 @@ export class AgentThreadStreamRuntime {
     });
     const queuedRunId = randomUUID();
     const queuedStreamOptions = target.ifIdle?.streamOptions ?? activeRecord?.streamOptions;
+    const isLocalReservedRun =
+      runId !== undefined && state.activeThreadRunIds.get(key) === runId && state.threadKeysByRunId.get(runId) === key;
 
-    if (activeRecord) {
+    if (activeRecord || isLocalReservedRun) {
       const persisted = this.#persistAcceptedUserSignal(
         agent,
         signal,
@@ -2582,7 +2584,9 @@ export class AgentThreadStreamRuntime {
         streamOptions: queuedStreamOptions,
       });
       state.pendingIdleSignalsByThread.set(key, idleQueue);
-      this.#watchThreadRunCompletion(state, pubsub, key, activeRecord);
+      if (activeRecord) {
+        this.#watchThreadRunCompletion(state, pubsub, key, activeRecord);
+      }
       return {
         signal,
         persisted,

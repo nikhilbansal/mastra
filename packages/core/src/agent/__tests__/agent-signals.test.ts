@@ -3833,34 +3833,84 @@ describe('Agent signals', () => {
     await expect(result.accepted).resolves.toMatchObject({ action: 'wake' });
   });
 
-  it('reports the reserved runId as active before registerRun populates the stream record', async () => {
+  it('keeps queueMessage as a successor while the active run is still reserved', async () => {
     const runtime = new AgentThreadStreamRuntime();
+    const pubsub = new ControlledLeasePubSub();
     const threadId = 'reservation-gap-thread';
     const resourceId = 'reservation-gap-user';
-
-    // agent.stream is awaited inside the idle-wake path before registerRun fires. Returning
-    // a never-resolving promise pins the runtime in the gap where sendSignal has reserved
-    // activeThreadRunIds + threadKeysByRunId but threadRunsById is still empty.
-    const agent = {
+    let releaseRegistration!: () => void;
+    const registrationReleased = new Promise<void>(resolve => {
+      releaseRegistration = resolve;
+    });
+    let finishFirst!: () => void;
+    const firstFinished = new Promise<void>(resolve => {
+      finishFirst = resolve;
+    });
+    let finishSecond!: () => void;
+    const secondFinished = new Promise<void>(resolve => {
+      finishSecond = resolve;
+    });
+    let firstStarted!: (runId: string) => void;
+    const firstRunStarted = new Promise<string>(resolve => {
+      firstStarted = resolve;
+    });
+    let streamCount = 0;
+    let agent!: Agent<any, any, any, any>;
+    const stream = vi.fn(async (signal, options: any) => {
+      streamCount += 1;
+      if (streamCount === 1) {
+        firstStarted(options.runId);
+        await registrationReleased;
+      }
+      const output = createFakeThreadRun(options.runId, streamCount === 1 ? firstFinished : secondFinished);
+      runtime.registerRun(agent, output, options, pubsub);
+      return output;
+    });
+    agent = {
       id: 'reservation-gap-agent',
-      stream: () => new Promise(() => {}),
+      getMemory: vi.fn(async () => undefined),
+      stream,
     } as unknown as Agent<any, any, any, any>;
 
-    const subscription = await runtime.subscribeToThread(agent, { threadId, resourceId });
+    const subscription = await runtime.subscribeToThread(agent, { threadId, resourceId }, pubsub);
     expect(subscription.activeRunId()).toBeNull();
 
-    const result = runtime.sendSignal(agent, createSignal({ type: 'user-message', contents: 'hello' }), {
-      resourceId,
-      threadId,
-      ifIdle: { streamOptions: { memory: { resource: resourceId, thread: threadId } } as any },
-    });
+    const result = runtime.sendSignal(
+      agent,
+      createSignal({ type: 'user-message', contents: 'hello' }),
+      {
+        resourceId,
+        threadId,
+        ifIdle: { streamOptions: { memory: { resource: resourceId, thread: threadId } } as any },
+      },
+      pubsub,
+    );
 
-    // accepted never settles here because agent.stream is pinned; the reserved runId is
-    // observable via the subscription's active run id before registerRun populates the stream.
-    expect(result.accepted).toBeInstanceOf(Promise);
-    expect(subscription.activeRunId()).not.toBeNull();
+    try {
+      const firstRunId = await firstRunStarted;
+      expect(subscription.activeRunId()).toBe(firstRunId);
 
-    subscription.unsubscribe();
+      const queued = runtime.queueMessage(agent, 'queued after reservation', { resourceId, threadId }, pubsub);
+      const accepted = await queued.accepted;
+      expect(accepted).toMatchObject({ action: 'deliver' });
+      expect(runtime.drainPendingSignals(firstRunId, pubsub, 'pre-run')).toEqual([]);
+      expect(stream).toHaveBeenCalledOnce();
+
+      releaseRegistration();
+      await expect(result.accepted).resolves.toMatchObject({ action: 'wake', runId: firstRunId });
+      finishFirst();
+
+      await waitForCondition(() => stream.mock.calls.length === 2);
+      expect(stream.mock.calls[1]?.[0]).toMatchObject({ contents: 'queued after reservation' });
+      expect(stream.mock.calls[1]?.[1]?.runId).not.toBe(firstRunId);
+      await nextTick();
+      expect(stream).toHaveBeenCalledTimes(2);
+    } finally {
+      releaseRegistration();
+      finishFirst();
+      finishSecond();
+      subscription.unsubscribe();
+    }
   });
 
   it('persists an idle signal without waking the agent when idle behavior is persist', async () => {
