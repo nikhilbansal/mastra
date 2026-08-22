@@ -121,7 +121,6 @@ export class MessageMerger {
         );
         if (existingIndex !== -1) {
           latestMessage.content.parts[existingIndex] = part;
-          toolResultAnchorMap.set(index, existingIndex);
           continue;
         }
       }
