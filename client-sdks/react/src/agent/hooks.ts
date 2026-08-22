@@ -970,7 +970,7 @@ export const useChat = ({
         });
         pendingToolApprovalIdsRef.current.delete(toolCallId);
         setIsAwaitingToolApproval(pendingToolApprovalIdsRef.current.size > 0);
-        setIsRunning(false);
+        if (pendingToolApprovalIdsRef.current.size > 0) setIsRunning(false);
       } catch (error) {
         setToolCallApprovals(prev => {
           const next = { ...prev };
@@ -1021,7 +1021,7 @@ export const useChat = ({
         });
         pendingToolApprovalIdsRef.current.delete(toolCallId);
         setIsAwaitingToolApproval(pendingToolApprovalIdsRef.current.size > 0);
-        setIsRunning(false);
+        if (pendingToolApprovalIdsRef.current.size > 0) setIsRunning(false);
       } catch (error) {
         setToolCallApprovals(prev => {
           const next = { ...prev };
