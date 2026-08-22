@@ -144,6 +144,8 @@ type AgentThreadRunRecord<OUTPUT = unknown> = {
   createSubscriberStream?: () => ReadableStream<unknown>;
   /** Settles once every stream-part broadcast publish for this run completed. */
   broadcastFinished?: Promise<void>;
+  /** Releases subscriber-visible terminal parts after runtime state and leases settle. */
+  settleTerminal?: () => void;
 };
 
 type PreparedThreadRun = {
@@ -661,6 +663,16 @@ export class AgentThreadStreamRuntime {
     const broadcastFinished = new Promise<void>(resolve => {
       resolveBroadcastFinished = resolve;
     });
+    let terminalSettled = false;
+    let resolveTerminalSettled!: () => void;
+    const terminalSettlement = new Promise<void>(resolve => {
+      resolveTerminalSettled = resolve;
+    });
+    const settleTerminal = () => {
+      if (terminalSettled) return;
+      terminalSettled = true;
+      resolveTerminalSettled();
+    };
 
     const wake = () => {
       const pending = [...waiters];
@@ -743,6 +755,16 @@ export class AgentThreadStreamRuntime {
           void start();
           while (!closed) {
             if (index < parts.length) {
+              const part = parts[index];
+              const type = (part as { type?: string } | null | undefined)?.type;
+              if (
+                output.status !== 'running' &&
+                !terminalSettled &&
+                (type === 'finish' || type === 'error' || type === 'abort')
+              ) {
+                await terminalSettlement;
+                if (closed) return;
+              }
               controller.enqueue(parts[index++]);
               return;
             }
@@ -775,7 +797,7 @@ export class AgentThreadStreamRuntime {
       });
     };
 
-    return { output, createSubscriberStream: createStream, startBroadcast: start, broadcastFinished };
+    return { output, createSubscriberStream: createStream, startBroadcast: start, broadcastFinished, settleTerminal };
   }
 
   #getThreadTarget(options?: { memory?: AgentExecutionOptions<any>['memory']; requestContext?: RequestContext }) {
@@ -848,6 +870,7 @@ export class AgentThreadStreamRuntime {
 
     if (suspended && record) {
       record.lifecycle = 'aborted';
+      record.settleTerminal?.();
       this.#clearSuspendedRun(state, runId);
       state.threadRunsById.delete(runId);
       state.threadRunsByStreamId.delete(record.streamId);
@@ -1012,6 +1035,13 @@ export class AgentThreadStreamRuntime {
     const leaseOwner = await leaseProvider.getLeaseOwner(key).catch(() => undefined);
     if (leaseOwner !== runId) return false;
 
+    // A suspension's model output can settle in the same turn that a remote
+    // abort arrives. Let the origin finish publishing the suspension chunk and
+    // release its now-terminal active-stream lease before deciding whether an
+    // abort request still has a live stream owner. The thread lease deliberately
+    // remains parked for the resumable run, so this does not make the thread
+    // available to a competing wake.
+    await new Promise<void>(resolve => setTimeout(resolve, 0));
     const activeOwner = this.#parseActiveStreamLeaseOwner(
       await leaseProvider.getLeaseOwner(this.#activeStreamLeaseKey(key)).catch(() => undefined),
     );
@@ -1089,6 +1119,7 @@ export class AgentThreadStreamRuntime {
     // active-behavior asked to persist. Honored here (not just in the memory layer) so it holds
     // for any memory implementation, including ones without a signal-aware save filter.
     if (signal.transient) return;
+    if (typeof agent.getMemory !== 'function') return;
     const memory = await agent.getMemory({ requestContext });
     if (!memory) return;
     await memory.saveMessages({
@@ -1160,6 +1191,7 @@ export class AgentThreadStreamRuntime {
       createSubscriberStream,
       startBroadcast,
       broadcastFinished,
+      settleTerminal,
     } = this.#withBroadcastStream(output, pubsub, key, streamId);
     const record: AgentThreadRunRecord<any> = {
       agent: { id: `persisted-signal:${signal.id}` } as Agent<any, any, any, any>,
@@ -1204,6 +1236,7 @@ export class AgentThreadStreamRuntime {
         this.#releaseThreadLease(pubsub, key, runId);
         // The signal this run rebroadcasts is persisted by definition.
         this.#publish(pubsub, key, { type: 'run-completed', runId, streamId, persisted: true });
+        settleTerminal();
       }, 0);
     });
   }
@@ -1366,6 +1399,7 @@ export class AgentThreadStreamRuntime {
       createSubscriberStream,
       startBroadcast,
       broadcastFinished,
+      settleTerminal,
     } = this.#withBroadcastStream(output, pubsub, key, streamId);
     const resumedToolCallId = (streamOptions as AgentExecutionOptions<OUTPUT> & { toolCallId?: string }).toolCallId;
     if (resumedToolCallId) {
@@ -1387,6 +1421,7 @@ export class AgentThreadStreamRuntime {
       createSubscriberStream,
       suspensions: state.suspensionMetadataByRunId.get(output.runId),
       broadcastFinished,
+      settleTerminal,
     };
 
     state.threadRunsById.set(output.runId, record);
@@ -1456,8 +1491,18 @@ export class AgentThreadStreamRuntime {
       this.#cleanupPreparedRun(state, record.runId);
 
       if (record.lifecycle === 'aborted') {
+        record.settleTerminal?.();
         state.watchedThreadStreamIds.delete(record.streamId);
         return;
+      }
+
+      if (record.output.status === 'suspended') {
+        // The model output can settle before the broadcast pump has consumed the
+        // suspension chunk. Wait for it so approval/request-access metadata is
+        // registered before deciding whether this is a parked run or a terminal
+        // output that merely carried a stale status value.
+        record.lifecycle = 'suspending';
+        await Promise.resolve(record.broadcastFinished);
       }
 
       if (record.output.status === 'suspended' && this.#isSuspendedRun(state, record.runId)) {
@@ -1468,9 +1513,13 @@ export class AgentThreadStreamRuntime {
         // — it is simply no longer retained for the life of the process. Mirrors the
         // internal-workflow registry, which already bounds parked runs this way.
         record.suspendedAt = Date.now();
-        await Promise.resolve(record.broadcastFinished);
         await this.#releaseActiveStreamLease(pubsub, key, record.runId, record.streamId);
-        this.#publish(pubsub, key, { type: 'run-suspended', runId: record.runId, streamId: record.streamId });
+        await this.#publishAndWait(pubsub, key, {
+          type: 'run-suspended',
+          runId: record.runId,
+          streamId: record.streamId,
+        }).catch(() => {});
+        record.settleTerminal?.();
         state.watchedThreadStreamIds.delete(record.streamId);
         return;
       }
@@ -1492,7 +1541,7 @@ export class AgentThreadStreamRuntime {
       // that arrives in this tail window is queued and drained below.
       void Promise.resolve(record.broadcastFinished).then(async () => {
         await this.#releaseActiveStreamLease(pubsub, key, record.runId, record.streamId);
-        this.#publish(pubsub, key, {
+        await this.#publishAndWait(pubsub, key, {
           type: 'run-completed',
           runId: record.runId,
           streamId: record.streamId,
@@ -1500,7 +1549,7 @@ export class AgentThreadStreamRuntime {
           // its messages to storage, so only its retained chunks are backed by a
           // persisted message and safe to replay to fresh subscribers.
           persisted: record.output.status === 'success',
-        });
+        }).catch(() => {});
         record.lifecycle = 'completed';
         state.watchedThreadStreamIds.delete(record.streamId);
         state.threadRunsByStreamId.delete(record.streamId);
@@ -1516,10 +1565,16 @@ export class AgentThreadStreamRuntime {
           state.activeThreadStreamIds.delete(key);
         }
         if (this.#hasPendingThreadWork(state, key)) {
-          void this.#drainPendingSignals(state, pubsub, key, record);
+          await this.#drainPendingSignals(state, pubsub, key, record);
         } else {
-          this.#releaseThreadLease(pubsub, key, record.runId);
+          await this.#releaseThreadLeaseAndWait(pubsub, key, record.runId);
         }
+        // A visible finish/error/abort means the runtime is truly ready for the
+        // user's next action: the old run no longer owns the thread and any
+        // queued successor has already been installed. Holding only terminal
+        // parts preserves incremental text/tool streaming while closing the
+        // stale-reservation race at the exact semantic boundary.
+        record.settleTerminal?.();
       });
     });
   }
