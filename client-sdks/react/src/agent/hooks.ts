@@ -1201,7 +1201,14 @@ export const useChat = ({
         [CLIENT_MESSAGE_ID_KEY]: clientMessageId,
       };
       const pendingMessage = { ...dbUserMessage, id: clientSetId, content: { ...dbUserMessage.content, metadata } };
-      setMessages(s => [...s, pendingMessage]);
+      setMessages(s =>
+        s.some(message => {
+          const existing = message.content.metadata as MastraDBMessageMetadata | undefined;
+          return message.role === 'user' && existing?.[CLIENT_MESSAGE_ID_KEY] === clientMessageId;
+        })
+          ? s
+          : [...s, pendingMessage],
+      );
     } else if (!signalId) {
       setMessages(s => [...s, dbUserMessage]);
     }

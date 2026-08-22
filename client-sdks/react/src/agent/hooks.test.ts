@@ -1232,6 +1232,46 @@ describe('useChat optimistic pending user message', () => {
     expect(sendArgs?.message?.metadata?.[CLIENT_MESSAGE_ID_KEY]).toBe(optimisticMessageId);
   });
 
+  it('reuses one optimistic row when the same pre-accept message is retried', async () => {
+    queueMessageMock
+      .mockRejectedValueOnce(new Error('pre-accept failure'))
+      .mockRejectedValueOnce(new Error('pre-accept failure'));
+    const { result } = renderHook(
+      () =>
+        useChat({
+          agentId: 'test-agent',
+          resourceId: 'resource-1',
+          threadId: 'thread-1',
+          enableThreadSignals: true,
+        }),
+      { wrapper },
+    );
+
+    await act(async () => {
+      await expect(
+        result.current.sendMessage({
+          mode: 'stream',
+          message: 'retry me',
+          threadId: 'thread-1',
+          clientMessageId: 'retry-message-1',
+        }),
+      ).rejects.toThrow('pre-accept failure');
+      await expect(
+        result.current.sendMessage({
+          mode: 'stream',
+          message: 'retry me',
+          threadId: 'thread-1',
+          clientMessageId: 'retry-message-1',
+        }),
+      ).rejects.toThrow('pre-accept failure');
+    });
+
+    const userMessages = result.current.messages.filter(message => message.role === 'user');
+    expect(userMessages).toHaveLength(1);
+    expect(userMessages[0]?.content.metadata?.[CLIENT_MESSAGE_ID_KEY]).toBe('retry-message-1');
+    expect(queueMessageMock).toHaveBeenCalledTimes(2);
+  });
+
   it('merges a multi-message send (text + attachment) into a single pending bubble', async () => {
     const { result } = renderHook(
       () =>

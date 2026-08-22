@@ -1630,7 +1630,6 @@ export const accumulateChunk = ({ chunk, conversation, metadata }: AccumulateChu
     case 'network-validation-end':
     case 'network-object':
     case 'network-object-result':
-    case 'tool-output-denied':
       return result;
 
     default:
