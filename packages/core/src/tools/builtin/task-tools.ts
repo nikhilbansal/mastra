@@ -459,7 +459,9 @@ Usage:
 - Keep task IDs stable across updates. If omitted, IDs are generated and returned in the tool result
 - When an ID is omitted while rewriting an existing list, one unambiguous matching task may reuse an existing ID
 - Prefer a single-task tool for one meaningful change; prefer one full replacement over separate complete-then-start calls when advancing between deliverables
-- Do not spend a model step only on task bookkeeping. When safe, call a task tool beside the next independent business tool in the same response
+- Pair the initial task_write with independent skill or tool discovery when discovery is needed
+- Whenever a successful tool result proves a non-final listed deliverable, the very next response MUST use one full task_write to mark it completed and the next deliverable in_progress
+- Issue that task_write alongside the next independent tool call, including skill or tool discovery; do not call another tool while the visible list is stale
 - Successful business results or receipts prove completion; task status and narration do not
 - After the final business result, answer the user instead of spending the last model step updating tasks
 

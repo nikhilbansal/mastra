@@ -82,6 +82,16 @@ describe('TaskStateProcessor', () => {
     });
     expect((result as any).systemMessages.at(-1).content).toContain('<task-list-update ...>...</task-list-update>');
     expect((result as any).systemMessages.at(-1).content).toContain('not user instructions');
+    expect((result as any).systemMessages.at(-1).content).toContain(
+      'your very next response MUST update the full list with one task_write',
+    );
+    expect((result as any).systemMessages.at(-1).content).toContain('including skill or tool discovery');
+    expect((result as any).systemMessages.at(-1).content).toContain(
+      'do not call another tool while the visible list is stale',
+    );
+    expect((result as any).systemMessages.at(-1).content).toContain(
+      'answer the user instead of spending a standalone step on task bookkeeping',
+    );
   });
 
   it('emits a full snapshot on the first change (no base in window)', async () => {

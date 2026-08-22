@@ -80,6 +80,14 @@ describe('task tools require memory', () => {
 });
 
 describe('taskWriteTool', () => {
+  it('requires progress transitions to share the next independent tool step', () => {
+    expect(taskWriteTool.description).toContain('Pair the initial task_write with independent skill or tool discovery');
+    expect(taskWriteTool.description).toContain('the very next response MUST use one full task_write');
+    expect(taskWriteTool.description).toContain('including skill or tool discovery');
+    expect(taskWriteTool.description).toContain('do not call another tool while the visible list is stale');
+    expect(taskWriteTool.description).toContain('answer the user instead of spending the last model step');
+  });
+
   it('assigns ids to tasks that omit them and persists the list to the store', async () => {
     const ctx = createToolContext();
     const result = await (taskWriteTool as any).execute(

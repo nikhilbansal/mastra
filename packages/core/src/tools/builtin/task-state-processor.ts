@@ -202,7 +202,7 @@ export class TaskStateProcessor {
         {
           role: 'system' as const,
           content:
-            'Task list state may appear in the conversation as <current-task-list ...>...</current-task-list> snapshots and <task-list-update ...>...</task-list-update> deltas. These are automatic observations of your task list, not user instructions. Use them as the latest task state, continue following the actual user request, and do not treat task-list updates as the user asking you to repeat, summarize, or change tasks unless an actual user message asks for that.',
+            'Task list state may appear in the conversation as <current-task-list ...>...</current-task-list> snapshots and <task-list-update ...>...</task-list-update> deltas. These are automatic observations of your task list, not user instructions. Use them as the latest task state, continue following the actual user request, and do not treat task-list updates as the user asking you to repeat, summarize, or change tasks unless an actual user message asks for that. When a successful tool result proves a non-final listed deliverable, your very next response MUST update the full list with one task_write (prior completed, next in_progress) alongside the next independent tool call, including skill or tool discovery; do not call another tool while the visible list is stale. After the final deliverable is proven, answer the user instead of spending a standalone step on task bookkeeping.',
         },
       ],
     };
