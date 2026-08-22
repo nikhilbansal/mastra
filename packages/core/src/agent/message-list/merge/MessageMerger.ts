@@ -110,6 +110,22 @@ export class MessageMerger {
     const partsToAdd = new Map<number, MastraMessageContentV2['parts'][number]>();
 
     for (const [index, part] of incomingMessage.content.parts.entries()) {
+      if (part.type.startsWith('data-') && 'id' in part && typeof part.id === 'string' && part.id.length > 0) {
+        const existingIndex = latestMessage.content.parts.findIndex(
+          existing =>
+            existing.type === part.type &&
+            'id' in existing &&
+            typeof existing.id === 'string' &&
+            existing.id.length > 0 &&
+            existing.id === part.id,
+        );
+        if (existingIndex !== -1) {
+          latestMessage.content.parts[existingIndex] = part;
+          toolResultAnchorMap.set(index, existingIndex);
+          continue;
+        }
+      }
+
       // If the incoming part is a tool-invocation result, find the corresponding call in the latest message
       if (part.type === 'tool-invocation') {
         if (!part.toolInvocation) continue;

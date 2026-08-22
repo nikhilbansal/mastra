@@ -602,6 +602,22 @@ export const accumulateChunk = ({ chunk, conversation, metadata }: AccumulateChu
       );
     }
 
+    if ('id' in dataPart && typeof dataPart.id === 'string' && dataPart.id.length > 0) {
+      const existingIndex = lastMessage.content.parts.findIndex(
+        part =>
+          part.type === dataPart.type &&
+          'id' in part &&
+          typeof part.id === 'string' &&
+          part.id.length > 0 &&
+          part.id === dataPart.id,
+      );
+      if (existingIndex !== -1) {
+        const parts = [...lastMessage.content.parts];
+        parts[existingIndex] = dataPart;
+        return replaceLast(result, withParts(lastMessage, parts));
+      }
+    }
+
     return replaceLast(result, withParts(lastMessage, [...lastMessage.content.parts, dataPart]));
   }
 

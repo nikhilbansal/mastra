@@ -749,6 +749,7 @@ export class AIV5Adapter {
           return {
             type: p.type,
             data: 'data' in p ? (p as any).data : undefined,
+            ...('id' in p && typeof p.id === 'string' ? { id: p.id } : {}),
           };
         }
 

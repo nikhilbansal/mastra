@@ -1,4 +1,4 @@
-import { describe, expect, it, vi } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { MessageList } from '../../agent/message-list';
 import type { Processor, ProcessorStreamWriter } from '../../processors';
 import { ChunkFrom } from '../../stream/types';
@@ -8,6 +8,7 @@ import type { ChunkType } from '../../stream/types';
 // invoke it directly in tests without spinning up a real agentic loop.
 let capturedOutputWriter: ((chunk: ChunkType, options?: { messageId?: string }) => Promise<void>) | undefined;
 let capturedCreateRunArgs: any;
+let emittedChunks: ChunkType[] | undefined;
 
 vi.mock('./agentic-loop', () => ({
   createAgenticLoopWorkflow: (params: any) => {
@@ -20,16 +21,16 @@ vi.mock('./agentic-loop', () => ({
         capturedCreateRunArgs = args;
         return {
           start: vi.fn().mockImplementation(async () => {
-            // Simulate the agentic loop emitting a data-* chunk
-            await capturedOutputWriter!(
+            for (const chunk of emittedChunks ?? [
               {
                 type: 'data-moderation',
                 data: { flagged: true },
                 runId: 'run-1',
                 from: ChunkFrom.AGENT,
               } as ChunkType,
-              { messageId: 'rotated-msg' },
-            );
+            ]) {
+              await capturedOutputWriter!(chunk, { messageId: 'rotated-msg' });
+            }
 
             return {
               status: 'success',
@@ -50,6 +51,10 @@ vi.mock('./agentic-loop', () => ({
 const { workflowLoopStream } = await import('./stream');
 
 describe('workflowLoopStream', () => {
+  beforeEach(() => {
+    emittedChunks = undefined;
+  });
+
   it('should pass a defined writer to output processors when processing data-* chunks', async () => {
     let receivedWriter: ProcessorStreamWriter | undefined;
 
@@ -94,6 +99,80 @@ describe('workflowLoopStream', () => {
     const dataChunk = chunks.find(c => c.type === 'data-moderation');
     expect(dataChunk).toBeDefined();
     expect(messageList.get.response.db().map(message => message.id)).toEqual(['rotated-msg']);
+  });
+
+  it('preserves data-part ids and reconciles same-id persistence in authored order', async () => {
+    emittedChunks = [
+      { type: 'data-progress', id: 'progress-1', data: { step: 1 }, runId: 'run-1', from: ChunkFrom.AGENT },
+      { type: 'data-card', id: 'card-1', data: { title: 'Card' }, runId: 'run-1', from: ChunkFrom.AGENT },
+      { type: 'data-progress', id: 'progress-1', data: { step: 2 }, runId: 'run-1', from: ChunkFrom.AGENT },
+      { type: 'data-progress', data: { legacy: 1 }, runId: 'run-1', from: ChunkFrom.AGENT },
+      { type: 'data-progress', id: 'progress-1', data: { step: 3 }, runId: 'run-1', from: ChunkFrom.AGENT },
+      { type: 'data-progress', data: { legacy: 2 }, runId: 'run-1', from: ChunkFrom.AGENT },
+      { type: 'data-progress', id: '', data: { malformed: 1 }, runId: 'run-1', from: ChunkFrom.AGENT },
+      { type: 'data-progress', id: '', data: { malformed: 2 }, runId: 'run-1', from: ChunkFrom.AGENT },
+    ] as ChunkType[];
+
+    const messageList = new MessageList({ threadId: 'test-thread' });
+    const stream = workflowLoopStream({
+      messageId: 'msg-identity',
+      runId: 'run-1',
+      startTimestamp: Date.now(),
+      agentId: 'test-agent',
+      messageList,
+      models: [{ model: {} as any, toolChoice: undefined }],
+      _internal: {},
+      streamState: { serialize: () => ({}), deserialize: () => {} },
+      methodType: 'stream',
+    });
+
+    const reader = stream.getReader();
+    while (!(await reader.read()).done) {}
+
+    const parts = messageList.get.response.db()[0]?.content.parts ?? [];
+    expect(parts).toHaveLength(6);
+    expect(parts).toMatchObject([
+      { type: 'data-progress', id: 'progress-1', data: { step: 3 } },
+      { type: 'data-card', id: 'card-1', data: { title: 'Card' } },
+      { type: 'data-progress', data: { legacy: 1 } },
+      { type: 'data-progress', data: { legacy: 2 } },
+      { type: 'data-progress', id: '', data: { malformed: 1 } },
+      { type: 'data-progress', id: '', data: { malformed: 2 } },
+    ]);
+  });
+
+  it('preserves ids for data parts emitted by an output processor writer', async () => {
+    const processor: Processor = {
+      id: 'writer-identity',
+      name: 'Writer Identity',
+      processOutputStream: async ({ part, writer }) => {
+        await writer?.custom({ type: 'data-progress', id: 'progress-1', data: { step: 1 } });
+        await writer?.custom({ type: 'data-progress', id: 'progress-1', data: { step: 2 } });
+        await writer?.custom({ type: 'data-progress', id: 'progress-1', data: { step: 3 } });
+        return part;
+      },
+    };
+    const messageList = new MessageList({ threadId: 'test-thread' });
+    const stream = workflowLoopStream({
+      messageId: 'msg-processor-identity',
+      runId: 'run-1',
+      startTimestamp: Date.now(),
+      agentId: 'test-agent',
+      messageList,
+      models: [{ model: {} as any, toolChoice: undefined }],
+      outputProcessors: [processor],
+      _internal: {},
+      streamState: { serialize: () => ({}), deserialize: () => {} },
+      methodType: 'stream',
+    });
+
+    const reader = stream.getReader();
+    while (!(await reader.read()).done) {}
+
+    const progressParts =
+      messageList.get.response.db()[0]?.content.parts.filter(part => part.type === 'data-progress') ?? [];
+    expect(progressParts).toHaveLength(1);
+    expect(progressParts).toMatchObject([{ type: 'data-progress', id: 'progress-1', data: { step: 3 } }]);
   });
 
   it('should forward resourceId from _internal to createRun()', async () => {

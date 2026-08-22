@@ -60,7 +60,7 @@ export function workflowLoopStream<Tools extends ToolSet = ToolSet, OUTPUT = und
         const responseMessageId = options?.messageId ?? messageId;
         const dataChunkStreamWriter = {
           custom: async (
-            data: { type: string; data?: unknown; transient?: boolean },
+            data: { type: string; data?: unknown; id?: string; transient?: boolean },
             writerOptions?: { messageId?: string },
           ) => {
             const emittedMessageId = writerOptions?.messageId ?? responseMessageId;
@@ -71,7 +71,13 @@ export function workflowLoopStream<Tools extends ToolSet = ToolSet, OUTPUT = und
                   role: 'assistant',
                   content: {
                     format: 2,
-                    parts: [{ type: data.type as `data-${string}`, data: data.data }],
+                    parts: [
+                      {
+                        type: data.type as `data-${string}`,
+                        data: data.data,
+                        ...(typeof data.id === 'string' ? { id: data.id } : {}),
+                      },
+                    ],
                   },
                   createdAt: new Date(),
                   threadId: _internal?.threadId,
@@ -139,6 +145,7 @@ export function workflowLoopStream<Tools extends ToolSet = ToolSet, OUTPUT = und
             const dataPart = {
               type: processedChunk.type as `data-${string}`,
               data: 'data' in processedChunk ? processedChunk.data : undefined,
+              ...('id' in processedChunk && typeof processedChunk.id === 'string' ? { id: processedChunk.id } : {}),
             };
             const message: MastraDBMessage = {
               id: responseMessageId,

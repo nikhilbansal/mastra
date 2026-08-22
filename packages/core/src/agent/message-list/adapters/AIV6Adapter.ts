@@ -745,6 +745,7 @@ export class AIV6Adapter {
           return {
             type: part.type,
             data: 'data' in part ? part.data : undefined,
+            ...('id' in part && typeof part.id === 'string' ? { id: part.id } : {}),
           } as AIV6Type.UIMessage['parts'][number];
         }
 

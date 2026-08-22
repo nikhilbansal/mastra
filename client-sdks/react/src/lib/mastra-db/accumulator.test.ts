@@ -390,12 +390,13 @@ const tripwireChunk = (reason: string): ChunkType =>
     payload: { reason, retry: false, metadata: { hint: 'blocked' }, processorId: 'guardrail-1' },
   }) as unknown as ChunkType;
 
-const dataPartChunk = (suffix: string, data: unknown): ChunkType =>
+const dataPartChunk = (suffix: string, data: unknown, id?: string): ChunkType =>
   ({
     type: `data-${suffix}` as `data-${string}`,
     runId: RUN_ID,
     from: 'AGENT',
     data,
+    ...(id !== undefined ? { id } : {}),
   }) as unknown as ChunkType;
 
 // The live server emits the signal echo with `data.type: 'user'`; default to
@@ -1175,6 +1176,29 @@ describe('accumulateChunk - data-* chunks', () => {
     expect(out).toHaveLength(1);
     expect(out[0].role).toBe('assistant');
     expect(out[0].content.parts[0].type).toBe('data-custom');
+  });
+
+  it('replaces same-id data parts in place while preserving distinct and legacy order', () => {
+    const out = reduce([
+      startChunk(),
+      dataPartChunk('progress', { step: 1 }, 'progress-1'),
+      dataPartChunk('card', { title: 'Card' }, 'card-1'),
+      dataPartChunk('progress', { step: 2 }, 'progress-1'),
+      dataPartChunk('progress', { legacy: 1 }),
+      dataPartChunk('progress', { step: 3 }, 'progress-1'),
+      dataPartChunk('progress', { legacy: 2 }),
+      dataPartChunk('progress', { malformed: 1 }, ''),
+      dataPartChunk('progress', { malformed: 2 }, ''),
+    ]);
+
+    expect(out[0].content.parts).toEqual([
+      { type: 'data-progress', id: 'progress-1', data: { step: 3 } },
+      { type: 'data-card', id: 'card-1', data: { title: 'Card' } },
+      { type: 'data-progress', data: { legacy: 1 } },
+      { type: 'data-progress', data: { legacy: 2 } },
+      { type: 'data-progress', id: '', data: { malformed: 1 } },
+      { type: 'data-progress', id: '', data: { malformed: 2 } },
+    ]);
   });
 });
 
