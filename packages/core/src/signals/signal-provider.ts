@@ -1,4 +1,5 @@
 import type { Agent } from '../agent/agent';
+import type { AgentRunLifecycleEvent } from '../agent/agent.types';
 import type { AgentSignalIfIdleOptions } from '../agent/types';
 import type { Mastra } from '../mastra';
 import type { SendNotificationSignalInput } from '../notifications/types';
@@ -211,6 +212,17 @@ export abstract class SignalProvider<TId extends string = string> {
    * ```
    */
   getTools?(): Record<string, unknown>;
+
+  /**
+   * Observe the authoritative start and finish boundaries of a connected agent
+   * run. Providers should leave `suspended` finishes intact: a resumed leg is
+   * still the same logical run and may need the provider's durable state. A
+   * provider error is logged by the Agent and does not change the run outcome.
+   *
+   * @experimental Agent run lifecycle hooks are experimental and may change in
+   * a future release.
+   */
+  onRunLifecycle?(event: AgentRunLifecycleEvent): void | Promise<void>;
 
   // ── Subscription tracking ──────────────────────────────────────────
 

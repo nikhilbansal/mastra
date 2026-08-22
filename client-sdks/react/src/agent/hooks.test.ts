@@ -1461,6 +1461,84 @@ describe('useChat task state', () => {
     await waitFor(() => expect(result.current.tasks).toEqual([]));
   });
 
+  it.each([
+    { type: 'finish', payload: { stepResult: { reason: 'stop' } } },
+    { type: 'error', payload: { error: new Error('failed') } },
+    { type: 'abort', payload: {} },
+  ])('clears tasks when the run emits terminal $type', async terminalChunk => {
+    nextSubscribeChunks = [
+      taskSignalChunk([firstTask]),
+      {
+        ...terminalChunk,
+        runId: 'run-tasks',
+        from: 'AGENT',
+      },
+    ];
+
+    const { result } = renderHook(
+      () =>
+        useChat({
+          agentId: 'test-agent',
+          resourceId: 'resource-1',
+          threadId: 'thread-1',
+          enableThreadSignals: true,
+        }),
+      { wrapper },
+    );
+
+    await waitFor(() => expect(result.current.tasks).toEqual([]));
+  });
+
+  it('keeps tasks when a tool call suspends for HITL', async () => {
+    nextSubscribeChunks = [
+      taskSignalChunk([firstTask]),
+      {
+        type: 'tool-call-suspended',
+        runId: 'run-tasks',
+        from: 'AGENT',
+        payload: { toolCallId: 'tool-call-approval-1' },
+      },
+    ];
+
+    const { result } = renderHook(
+      () =>
+        useChat({
+          agentId: 'test-agent',
+          resourceId: 'resource-1',
+          threadId: 'thread-1',
+          enableThreadSignals: true,
+        }),
+      { wrapper },
+    );
+
+    await waitFor(() => expect(result.current.tasks).toEqual([firstTask]));
+  });
+
+  it.each(['tool-calls', 'suspended'])('keeps tasks for nonterminal finish reason %s', async reason => {
+    nextSubscribeChunks = [
+      taskSignalChunk([firstTask]),
+      {
+        type: 'finish',
+        runId: 'run-tasks',
+        from: 'AGENT',
+        payload: { stepResult: { reason } },
+      },
+    ];
+
+    const { result } = renderHook(
+      () =>
+        useChat({
+          agentId: 'test-agent',
+          resourceId: 'resource-1',
+          threadId: 'thread-1',
+          enableThreadSignals: true,
+        }),
+      { wrapper },
+    );
+
+    await waitFor(() => expect(result.current.tasks).toEqual([firstTask]));
+  });
+
   it('seeds tasks from initialMessages on thread load', () => {
     const initialMessages: MastraDBMessage[] = [
       {
@@ -1496,6 +1574,61 @@ describe('useChat task state', () => {
     );
 
     expect(result.current.tasks).toEqual([firstTask]);
+  });
+
+  it('uses a persisted terminal task snapshot to clear tasks on reload', () => {
+    const initialMessages: MastraDBMessage[] = [
+      {
+        id: 'msg-task-signal',
+        role: 'assistant',
+        createdAt: new Date(0),
+        content: {
+          format: 2,
+          parts: [
+            {
+              type: 'data-signal',
+              data: {
+                id: 'task-state-1',
+                type: 'state',
+                tagName: 'current-task-list',
+                metadata: { value: { tasks: [firstTask] } },
+              },
+            },
+          ],
+        },
+      },
+      {
+        id: 'msg-task-settlement',
+        role: 'signal',
+        createdAt: new Date(1),
+        content: {
+          format: 2,
+          parts: [{ type: 'text', text: '' }],
+          metadata: {
+            signal: {
+              id: 'task-state-settlement',
+              type: 'state',
+              tagName: 'current-task-list',
+              createdAt: new Date(1).toISOString(),
+              metadata: { value: { tasks: [] } },
+            },
+          },
+        },
+      },
+    ];
+
+    const { result } = renderHook(
+      () =>
+        useChat({
+          agentId: 'test-agent',
+          resourceId: 'resource-1',
+          threadId: 'thread-1',
+          initialMessages,
+        }),
+      { wrapper },
+    );
+
+    expect(result.current.tasks).toEqual([]);
   });
 
   it('resets tasks when initialMessages changes', () => {

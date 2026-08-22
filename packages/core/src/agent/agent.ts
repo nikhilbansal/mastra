@@ -6957,6 +6957,36 @@ export class Agent<
         resourceId,
       }) ||
       randomUUID();
+
+    const configuredRunLifecycle = options.onRunLifecycle;
+    const signalRunLifecycleProviders = this.#signals?.filter(provider => provider.onRunLifecycle) ?? [];
+    if (configuredRunLifecycle || signalRunLifecycleProviders.length > 0) {
+      options = {
+        ...options,
+        onRunLifecycle: async event => {
+          // The configured callback can own admission and durable accounting,
+          // so preserve its existing failure semantics and always run it first.
+          await configuredRunLifecycle?.(event);
+
+          // Signal providers observe lifecycle; they must not turn an already
+          // completed run into a failed one or starve sibling accounting hooks.
+          for (const provider of signalRunLifecycleProviders) {
+            try {
+              await provider.onRunLifecycle?.(event);
+            } catch (error) {
+              this.logger.error('Signal provider run lifecycle hook failed', {
+                providerId: provider.id,
+                phase: event.phase,
+                ...(event.phase === 'finish' ? { outcome: event.outcome } : {}),
+                runId: event.runId,
+                error,
+              });
+            }
+          }
+        },
+      };
+    }
+
     const instructions = options.instructions || (await this.getInstructions({ requestContext }));
     const mcpServerGuidance = await this.getMcpServerGuidance({
       requestContext,

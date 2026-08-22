@@ -453,10 +453,13 @@ export const useChat = ({
         setIsRunning(false);
       }
 
-      if (chunk.type === 'finish' || chunk.type === 'abort' || chunk.type === 'error') {
+      const finishReason = chunk.type === 'finish' ? String(chunk.payload?.stepResult?.reason ?? '') : '';
+      const terminalFinish = chunk.type === 'finish' && finishReason !== 'tool-calls' && finishReason !== 'suspended';
+      if (terminalFinish || chunk.type === 'abort' || chunk.type === 'error') {
         pendingToolApprovalIdsRef.current.clear();
         setIsAwaitingToolApproval(false);
         setIsRunning(false);
+        setTasks([]);
       }
 
       void (onChunk ?? _onChunk.current)?.(chunk);

@@ -1,6 +1,15 @@
+import type { AgentRunLifecycleEvent } from '../agent/agent.types';
+import type { AgentSignal } from '../agent/types';
 import type { InputProcessorOrWorkflow } from '../processors';
 import { TaskStateProcessor } from '../tools/builtin/task-state-processor';
-import { taskCheckTool, taskCompleteTool, taskUpdateTool, taskWriteTool } from '../tools/builtin/task-tools';
+import {
+  clearTaskListForRunSettlement,
+  TASKS_STATE_ID,
+  taskCheckTool,
+  taskCompleteTool,
+  taskUpdateTool,
+  taskWriteTool,
+} from '../tools/builtin/task-tools';
 
 import { SignalProvider } from './signal-provider';
 
@@ -38,10 +47,17 @@ import { SignalProvider } from './signal-provider';
  * processor on its input-processor chain (which propagates the Mastra instance
  * so the processor can resolve the TaskStore).
  *
+ * A successful, failed, or canceled run clears its task working state and
+ * persists one empty state snapshot. Suspended runs retain their exact state
+ * until a resumed leg reaches a real terminal outcome.
+ *
  * @experimental Agent signals are experimental and may change in a future release.
  */
 export class TaskSignalProvider extends SignalProvider<'task-signals'> {
   readonly id = 'task-signals';
+
+  static readonly #SETTLEMENT_SIGNAL_ID_KEY = 'mastra:tasks:settlement-signal-id';
+  static readonly #SETTLED_KEY = 'mastra:tasks:settled';
 
   readonly #processor = new TaskStateProcessor();
 
@@ -56,5 +72,69 @@ export class TaskSignalProvider extends SignalProvider<'task-signals'> {
       task_complete: taskCompleteTool,
       task_check: taskCheckTool,
     };
+  }
+
+  async onRunLifecycle(event: AgentRunLifecycleEvent): Promise<void> {
+    if (
+      event.phase !== 'finish' ||
+      event.outcome === 'suspended' ||
+      !event.threadId ||
+      !event.resourceId ||
+      !this.mastra ||
+      !this.agent ||
+      event.requestContext.get(TaskSignalProvider.#SETTLED_KEY) === true
+    ) {
+      return;
+    }
+
+    const cleared = await clearTaskListForRunSettlement({
+      agent: { threadId: event.threadId, resourceId: event.resourceId },
+      mastra: this.mastra,
+      requestContext: event.requestContext,
+    });
+    if (!cleared) {
+      event.requestContext.set(TaskSignalProvider.#SETTLED_KEY, true);
+      return;
+    }
+
+    const carriedSignalId = event.requestContext.get(TaskSignalProvider.#SETTLEMENT_SIGNAL_ID_KEY);
+    const signalId = typeof carriedSignalId === 'string' && carriedSignalId ? carriedSignalId : crypto.randomUUID();
+    event.requestContext.set(TaskSignalProvider.#SETTLEMENT_SIGNAL_ID_KEY, signalId);
+
+    // This is deliberately sent as a persisted state signal rather than via
+    // sendStateSignal(): the latter may dedupe against thread metadata that
+    // still says "empty" even when the model wrote tasks after the last input
+    // step. A unique terminal signal must always follow the task tool result.
+    const emptyTaskSignal: AgentSignal = {
+      id: signalId,
+      type: 'state',
+      tagName: 'current-task-list',
+      contents: '',
+      attributes: { count: 0 },
+      metadata: {
+        state: {
+          id: TASKS_STATE_ID,
+          threadId: event.threadId,
+          cacheKey: 'tasks:',
+          mode: 'snapshot',
+        },
+        value: { tasks: [] },
+      },
+    };
+    const delivery = this.agent.sendSignal(emptyTaskSignal, {
+      resourceId: event.resourceId,
+      threadId: event.threadId,
+      ifActive: { behavior: 'persist' },
+      ifIdle: {
+        behavior: 'persist',
+        streamOptions: { requestContext: event.requestContext },
+      },
+    });
+    const accepted = await delivery.accepted;
+    if (accepted.action !== 'persist') {
+      throw new Error(`Task settlement signal was not persisted (received ${accepted.action}).`);
+    }
+    await delivery.persisted;
+    event.requestContext.set(TaskSignalProvider.#SETTLED_KEY, true);
   }
 }

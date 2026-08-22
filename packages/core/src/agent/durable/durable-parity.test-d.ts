@@ -66,6 +66,8 @@ type ConsumedDuringPreparation =
   | 'onFinish'
   | 'onError'
   | 'onAbort'
+  // Run lifecycle callbacks are in-process only and aren't serialized into a durable workflow.
+  | 'onRunLifecycle'
   | 'experimentalTransform'
   // AbortSignal is managed via the registry's abortController/abortSignal
   | 'abortSignal'

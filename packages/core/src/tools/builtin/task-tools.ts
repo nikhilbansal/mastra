@@ -332,6 +332,10 @@ interface TaskToolContext {
   mastra?: MastraUnion;
 }
 
+export type TaskRunSettlementContext = TaskToolContext & {
+  agent: Required<Pick<TaskToolAgentContext, 'threadId' | 'resourceId'>>;
+};
+
 /** True when the run is memory-backed (state signals + the task store require a thread + resource). */
 function isMemoryBacked(agent: TaskToolAgentContext | undefined): boolean {
   return Boolean(agent?.threadId && agent?.resourceId);
@@ -388,6 +392,28 @@ async function readTaskStore(context: TaskToolContext): Promise<TaskItemSnapshot
   if (!store || !threadId) return [];
   const tasks = await store.getState<TaskRecord[]>({ threadId, type: TASK_STATE_TYPE });
   return Array.isArray(tasks) ? tasks : [];
+}
+
+/**
+ * Clear the durable task working state when its owning agent run settles.
+ *
+ * The task list is presentation working state, not completion authority. A
+ * suspended run is deliberately excluded by the caller so HITL resume keeps
+ * the exact list; every real terminal outcome removes it before another turn
+ * can inherit stale work.
+ */
+export async function clearTaskListForRunSettlement(context: TaskRunSettlementContext): Promise<boolean> {
+  const store = await resolveTaskStore(context);
+  const threadId = context.agent.threadId;
+  if (!store) throw new Error('Task state storage is unavailable during run settlement.');
+
+  const currentTasks = await readTaskStore(context);
+  if (currentTasks.length === 0) return false;
+
+  await store.setState({ threadId, type: TASK_STATE_TYPE, value: [] });
+  context.requestContext?.set(TASKS_REQUEST_CONTEXT_KEY, []);
+  emitTaskDisplayUpdate(context.requestContext, []);
+  return true;
 }
 
 /**
