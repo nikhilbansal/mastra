@@ -447,19 +447,21 @@ async function applyTaskMutation(
  */
 export const taskWriteTool = createTool({
   id: 'task_write',
-  description: `Create and manage a structured task list for your current coding session. This helps you track progress, organize complex tasks, and demonstrate thoroughness to the user.
+  description: `Create or replace a concise task list for genuinely long work. The list is a user-facing progress display, not a reasoning trace.
 
 Usage:
-- Use this to create the initial task list or replace the whole list after replanning
+- Use this only when the request has at least 3 distinct, user-verifiable deliverables or the user asks for a checklist
+- Each task must describe a deliverable the user can verify. Never make tool discovery, reads, research, analysis, prerequisites, validation, or internal choices separate tasks
+- Create the initial list once. Later full replacements are for replanning or coalescing several status transitions in one call (for example, previous completed and next in_progress)
 - Pass the FULL task list each time this tool is called (replaces the previous list)
 - Each task has: id (stable identifier), content (imperative), status (pending, in_progress, or completed), activeForm (present continuous)
 - IDs must be unique. If duplicate explicit IDs are provided, the duplicate task is returned with a generated fallback ID
 - Keep task IDs stable across updates. If omitted, IDs are generated and returned in the tool result
 - When an ID is omitted while rewriting an existing list, one unambiguous matching task may reuse an existing ID
-- Prefer single-task update tools when they are available
-- Mark tasks in_progress BEFORE starting work (only ONE at a time)
-- Mark tasks completed IMMEDIATELY after finishing
-- Use this for multi-step tasks requiring 3+ distinct actions
+- Prefer a single-task tool for one meaningful change; prefer one full replacement over separate complete-then-start calls when advancing between deliverables
+- Do not spend a model step only on task bookkeeping. When safe, call a task tool beside the next independent business tool in the same response
+- Successful business results or receipts prove completion; task status and narration do not
+- After the final business result, answer the user instead of spending the last model step updating tasks
 
 States:
 - pending: Not yet started
@@ -506,7 +508,9 @@ export const taskUpdateTool = createTool({
 Usage:
 - Provide the task ID returned by the task-list tools
 - Include only the fields that changed
-- Use status to move a task between pending, in_progress, and completed
+- Do not call this merely to announce that the next task is starting
+- Do not spend a model step only on task bookkeeping; when safe, pair the update with the next independent business tool call
+- A successful business result or receipt is the authority for completed status
 - Use task_complete when only marking a task completed
 - If the ID is unknown, the tool returns an error with available task IDs`,
   inputSchema: z
@@ -574,6 +578,9 @@ export const taskCompleteTool = createTool({
 
 Usage:
 - Provide the task ID returned by the task-list tools
+- Call this only after a successful business result or receipt proves the deliverable completed
+- Do not spend a model step only on task bookkeeping; when safe, pair completion with the next independent business tool call
+- After the final business result, answer the user instead of spending the last model step on task completion
 - If the ID is unknown, the tool returns an error with available task IDs`,
   inputSchema: z.object({
     id: taskIdSchema,
@@ -625,7 +632,7 @@ Usage:
  */
 export const taskCheckTool = createTool({
   id: 'task_check',
-  description: `Check the completion status of your current task list. Use this before finishing tracked work to ensure all tasks are completed.
+  description: `Check the completion status of your current task list when task state is uncertain or the user asks for it. Do not call this as a routine final step; successful business results or receipts remain the completion authority.
 
 Returns:
 - Human-readable content summary with task counts and incomplete task IDs
