@@ -1727,6 +1727,12 @@ describe('Agent signals', () => {
       memory,
     });
 
+    const subscription = await agent.subscribeToThread({
+      threadId: 'state-thread',
+      resourceId: 'state-user',
+    });
+    const firstLivePart = subscription.stream[Symbol.asyncIterator]().next();
+
     const result = await agent.sendStateSignal(
       {
         id: 'browser',
@@ -1740,6 +1746,14 @@ describe('Agent signals', () => {
     if (result.skipped) throw new Error('expected state signal to be persisted, not skipped');
     await expect(result.accepted).resolves.toMatchObject({ action: 'persist' });
     expect(result.signal).toBeDefined();
+
+    await expect(withTimeout(firstLivePart, 'Timed out waiting for persisted state signal')).resolves.toMatchObject({
+      done: false,
+      value: {
+        type: 'data-signal',
+        data: expect.objectContaining({ type: 'state' }),
+      },
+    });
 
     expect(result.signal).toMatchObject({
       type: 'state',
@@ -1767,6 +1781,7 @@ describe('Agent signals', () => {
         }),
       }),
     );
+    subscription.unsubscribe();
   });
 
   it('delivers medium-priority notification records while idle', async () => {

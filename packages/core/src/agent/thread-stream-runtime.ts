@@ -1122,20 +1122,26 @@ export class AgentThreadStreamRuntime {
     const finished = new Promise<void>(resolve => {
       finish = resolve;
     });
-    const parts: any[] = [
-      { type: 'start', runId },
-      { ...signal.toDataPart(), runId },
-      {
-        type: 'finish',
-        runId,
-        payload: {
-          stepResult: { reason: 'stop' },
-          output: {
-            usage: { inputTokens: 0, outputTokens: 0, totalTokens: 0 },
-          },
-        },
-      },
-    ];
+    // Persist-only state signals update thread state; they do not start agent
+    // work. Broadcast them unframed so chat clients apply the snapshot without
+    // briefly toggling their running/Stop UI after a real run has finished.
+    const parts: any[] =
+      signal.type === 'state'
+        ? [{ ...signal.toDataPart(), runId }]
+        : [
+            { type: 'start', runId },
+            { ...signal.toDataPart(), runId },
+            {
+              type: 'finish',
+              runId,
+              payload: {
+                stepResult: { reason: 'stop' },
+                output: {
+                  usage: { inputTokens: 0, outputTokens: 0, totalTokens: 0 },
+                },
+              },
+            },
+          ];
     const output = {
       runId,
       status: 'running',
