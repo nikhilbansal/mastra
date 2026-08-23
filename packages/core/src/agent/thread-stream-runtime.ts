@@ -81,6 +81,57 @@ function sanitizeBroadcastPart(part: unknown): unknown {
   const payload = typed.payload;
   if (!payload || typeof payload !== 'object') return part;
 
+  if (typed.type === 'error') {
+    const error = payload.error;
+    if (error === 'Agent run stopped before completion.') {
+      return {
+        ...typed,
+        payload: {
+          ...(typeof payload.type === 'string' ? { type: payload.type } : {}),
+          error,
+        },
+      };
+    }
+
+    const record = error && typeof error === 'object' ? (error as Record<string, unknown>) : undefined;
+    const cause =
+      record?.cause && typeof record.cause === 'object' ? (record.cause as Record<string, unknown>) : undefined;
+    const rawName = typeof record?.name === 'string' ? record.name : undefined;
+    const name = rawName?.match(/^[A-Za-z0-9_-]{1,120}$/)?.[0];
+    const rawCode =
+      typeof record?.code === 'string' ? record.code : typeof cause?.code === 'string' ? cause.code : undefined;
+    const code = rawCode?.match(/^[A-Za-z0-9_-]{1,120}$/)?.[0];
+    const rawStatus =
+      typeof record?.status === 'number'
+        ? record.status
+        : typeof record?.statusCode === 'number'
+          ? record.statusCode
+          : undefined;
+    const status =
+      rawStatus !== undefined && Number.isInteger(rawStatus) && rawStatus >= 100 && rawStatus <= 599
+        ? rawStatus
+        : undefined;
+    const message = code
+      ? `Provider request failed (${code}).`
+      : status
+        ? `Provider request failed (HTTP ${status}).`
+        : 'Provider request failed.';
+
+    return {
+      ...typed,
+      payload: {
+        ...(typeof payload.type === 'string' ? { type: payload.type } : {}),
+        error: {
+          ...(name ? { name } : {}),
+          message,
+          ...(code ? { code } : {}),
+          ...(status !== undefined ? { status } : {}),
+          ...(typeof record?.isRetryable === 'boolean' ? { isRetryable: record.isRetryable } : {}),
+        },
+      },
+    };
+  }
+
   if (typed.type === 'step-start') {
     if (!('request' in payload) && !('inputMessages' in payload)) return part;
     const { request: _request, inputMessages: _inputMessages, ...rest } = payload;
