@@ -57,7 +57,7 @@
     "build:observability": "pnpm turbo build --filter \"./observability/*\"",
     "build:workspaces": "pnpm turbo build --filter \"./workspaces/*\"",
     "dev:playground": "pnpm turbo run dev --filter ./packages/playground-ui --filter ./packages/playground --filter ./client-sdks/react",
-    "dev:alippo-studio": "pnpm turbo build --filter @internal/playground && PORT=4000 HOST=localhost pnpm --filter @internal/playground exec vite --port 4111",
+    "dev:alippo-studio": "corepack pnpm turbo build --filter @internal/playground && PORT=4000 HOST=localhost corepack pnpm --filter @internal/playground exec vite --port 4111",
     "generate:integration": "tsx ./integration-generator/index.ts",
     "test": "vitest run",
     "test:watch": "vitest watch",
