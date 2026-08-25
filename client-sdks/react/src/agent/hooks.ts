@@ -987,7 +987,7 @@ export const useChat = ({
     }
 
     const response = await agent.approveToolCall({
-      runId: currentRunId,
+      runId: currentRunId!,
       toolCallId,
       ...continuation,
     });
@@ -1038,7 +1038,7 @@ export const useChat = ({
     }
 
     const response = await agent.declineToolCall({
-      runId: currentRunId,
+      runId: currentRunId!,
       toolCallId,
       ...continuation,
     });
@@ -1188,10 +1188,10 @@ export const useChat = ({
         ? `client-set-${uuid()}`
         : undefined;
     const signalId = clientSetId;
-    const clientMessageId = args.clientMessageId ?? clientSetId;
+    const clientMessageId = ('clientMessageId' in args ? args.clientMessageId : undefined) ?? clientSetId;
 
-    if (signalId && !isRunning) {
-      // Idle signal path: append the user turn optimistically as `pending` with a
+    if (signalId) {
+      // Signal path: append the user turn optimistically as `pending` with a
       // visibly client-owned id. The server echo can replace the final message
       // id while the matching client id reconciles the pending bubble.
       const metadata: MastraDBMessageMetadata = {

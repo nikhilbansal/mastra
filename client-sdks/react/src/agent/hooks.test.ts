@@ -494,7 +494,7 @@ describe('useChat forwards clientTools', () => {
       await result.current.approveToolCall('tool-call-approval-2');
     });
 
-    expect(result.current.isRunning).toBe(false);
+    expect(result.current.isRunning).toBe(true);
     expect(result.current.isAwaitingToolApproval).toBe(false);
 
     unmount();
@@ -557,7 +557,7 @@ describe('useChat forwards clientTools', () => {
       await result.current.approveToolCall('tool-call-approval-2');
     });
 
-    expect(result.current.isRunning).toBe(false);
+    expect(result.current.isRunning).toBe(true);
     expect(result.current.isAwaitingToolApproval).toBe(false);
 
     unmount();

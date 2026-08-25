@@ -9,6 +9,7 @@ export const MastraReactProvider = ({
   apiPrefix,
   credentials,
   customFetch,
+  retries,
 }: MastraReactProviderProps) => {
   return (
     <MastraClientProvider
@@ -17,6 +18,7 @@ export const MastraReactProvider = ({
       apiPrefix={apiPrefix}
       credentials={credentials}
       customFetch={customFetch}
+      retries={retries}
     >
       {children}
     </MastraClientProvider>

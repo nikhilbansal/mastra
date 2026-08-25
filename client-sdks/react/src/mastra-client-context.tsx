@@ -25,6 +25,8 @@ export interface MastraClientProviderProps {
    * When provided, this overrides the default fetch behavior.
    */
   customFetch?: typeof fetch;
+  /** Maximum automatic HTTP retries for this client. */
+  retries?: number;
 }
 
 export const MastraClientProvider = ({
@@ -34,12 +36,13 @@ export const MastraClientProvider = ({
   apiPrefix,
   credentials = 'include',
   customFetch,
+  retries,
 }: MastraClientProviderProps) => {
   // Consumers key per-client caches (endpoint support, capability probes) on this instance,
   // so a fresh client each render silently resets them.
   const client = useMemo(
-    () => createMastraClient(baseUrl, headers, apiPrefix, credentials, customFetch),
-    [baseUrl, headers, apiPrefix, credentials, customFetch],
+    () => createMastraClient(baseUrl, headers, apiPrefix, credentials, customFetch, retries),
+    [baseUrl, headers, apiPrefix, credentials, customFetch, retries],
   );
 
   return <MastraClientContext.Provider value={client}>{children}</MastraClientContext.Provider>;
@@ -77,6 +80,7 @@ const createMastraClient = (
   apiPrefix?: string,
   credentials: MastraClientCredentials = 'include',
   customFetch?: typeof fetch,
+  retries?: number,
 ) => {
   return new MastraClient({
     baseUrl: baseUrl || '',
@@ -84,5 +88,6 @@ const createMastraClient = (
     apiPrefix,
     credentials,
     fetch: customFetch,
+    retries,
   });
 };

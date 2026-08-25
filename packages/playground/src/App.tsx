@@ -706,7 +706,13 @@ function App() {
   }
 
   return (
-    <MastraReactProvider baseUrl={baseUrl} headers={studioHeaders} apiPrefix={apiPrefix} customFetch={customFetch}>
+    <MastraReactProvider
+      baseUrl={baseUrl}
+      headers={studioHeaders}
+      apiPrefix={apiPrefix}
+      customFetch={customFetch}
+      retries={0}
+    >
       <RoleImpersonationProvider>
         <PostHogProvider>
           <RoutePermissionsGate baseUrl={baseUrl}>

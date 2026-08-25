@@ -140,4 +140,19 @@ describe('createMastraClient credentials', () => {
 
     expect(capturedClient.options.credentials).toBe('include');
   });
+
+  it('should pass the configured retry count to the client', async () => {
+    const { createElement } = await import('react');
+    const { renderToString } = await import('react-dom/server');
+
+    renderToString(
+      createElement(MastraClientProvider, {
+        baseUrl: 'https://api.example.com',
+        retries: 0,
+        children: null,
+      }),
+    );
+
+    expect(mockMastraClientOptions.at(-1)?.retries).toBe(0);
+  });
 });
