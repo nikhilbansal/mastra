@@ -384,6 +384,9 @@ describe('NotificationsLibSQL', () => {
       deliverAt,
       summaryAt,
     });
+    const claim = () => store.claimNotificationSummary({ threadId: 'thread-1', id: 'summary-then-deliver', now });
+    // Of overlapping claims, only one clears the due summary.
+    expect((await Promise.all([claim(), claim()])).filter(Boolean)).toHaveLength(1);
 
     const updated = await store.updateNotification({
       id: 'summary-then-deliver',

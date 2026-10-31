@@ -44,6 +44,22 @@ export abstract class NotificationsStorage extends StorageDomain {
     }
     return updated;
   }
+
+  /**
+   * Claim a notification's due summary: clear `summaryAt` only while the notification is pending
+   * and its summary is due at `now`. Resolves `true` for the one caller that cleared it, so
+   * overlapping dispatches over the same due set summarize each notification once.
+   * Adapters should override this with a conditional write — the default reads then writes, which
+   * is not atomic, so existing adapters keep working.
+   */
+  async claimNotificationSummary(input: { threadId: string; id: string; now: Date }): Promise<boolean> {
+    const record = await this.getNotification(input);
+    if (record?.status !== 'pending' || !record.summaryAt || record.summaryAt.getTime() > input.now.getTime()) {
+      return false;
+    }
+    await this.updateNotification({ threadId: input.threadId, id: input.id, summaryAt: null });
+    return true;
+  }
 }
 
 const FALLBACK_UPDATE_CONCURRENCY = 20;
@@ -233,6 +249,16 @@ export class InMemoryNotificationsStorage extends NotificationsStorage {
       updated.push(cloneRecord(next));
     }
     return updated;
+  }
+
+  override async claimNotificationSummary(input: { threadId: string; id: string; now: Date }): Promise<boolean> {
+    const key = notificationKey(input.threadId, input.id);
+    const existing = this.#notifications.get(key);
+    if (existing?.status !== 'pending' || !existing.summaryAt || existing.summaryAt.getTime() > input.now.getTime()) {
+      return false;
+    }
+    this.#notifications.set(key, { ...existing, summaryAt: undefined, updatedAt: new Date() });
+    return true;
   }
 
   async dangerouslyClearAll(): Promise<void> {

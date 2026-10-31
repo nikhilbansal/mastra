@@ -87,9 +87,10 @@ export function createNotificationSignal(notification: NotificationRecord): Crea
   });
 }
 
-export function createNotificationSummarySignal(summary: NotificationSummary): CreatedAgentSignal {
+export function createNotificationSummarySignal(summary: NotificationSummary, id?: string): CreatedAgentSignal {
   const notification = notificationSummarySignalMetadata(summary);
   return createSignal({
+    id,
     type: 'notification',
     tagName: 'notification-summary',
     contents: notificationSummaryContents(summary),

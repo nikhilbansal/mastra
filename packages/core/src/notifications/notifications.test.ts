@@ -1152,7 +1152,12 @@ describe('notification inbox', () => {
       });
     }
 
-    const result = await dispatchDueNotifications({ mastra, storage, now });
+    // Two instances dispatch the same tick over one storage; only one may summarize it.
+    const [result] = await Promise.all(
+      [mastra, { getAgentById: async () => ({ sendSignal }) }].map(instance =>
+        dispatchDueNotifications({ mastra: instance, storage, now }),
+      ),
+    );
 
     expect(result.failed).toEqual([]);
     expect(result.delivered).toMatchObject([

@@ -355,6 +355,16 @@ export class NotificationsMongoDB extends NotificationsStorage {
     return updated;
   }
 
+  // One conditional write, so only one of overlapping dispatches clears a due summary.
+  override async claimNotificationSummary(input: { threadId: string; id: string; now: Date }): Promise<boolean> {
+    const collection = await this.getCollection();
+    const result = await collection.updateOne(
+      { threadId: input.threadId, id: input.id, status: 'pending', summaryAt: { $ne: null, $lte: input.now } },
+      { $set: { summaryAt: null, updatedAt: new Date() } },
+    );
+    return result.modifiedCount > 0;
+  }
+
   // Inlined instead of importing `UpdateNotificationsStatusInput` so this adapter's `.d.ts` stays valid
   // against older @mastra/core versions that predate the bulk method.
   override async updateNotificationsStatus(input: {

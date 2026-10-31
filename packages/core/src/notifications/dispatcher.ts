@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import type { CreatedAgentSignal } from '../agent/signals';
 import { agentThreadStreamRuntime } from '../agent/thread-stream-runtime';
 import type { AgentSignalIfIdleOptions, SendAgentSignalOptions, SendAgentSignalResult } from '../agent/types';
@@ -173,6 +174,8 @@ async function recordDeliveryFailure({
     id: record.id,
     threadId: record.threadId,
     ...resolveDeliveryFailureUpdate(record),
+    // A summary claims its records by clearing `summaryAt`; restore it so a failed summary retries.
+    summaryAt: record.summaryAt,
     lastDeliveryAttemptAt: now,
     lastDeliveryError: errorMessage(error),
   });
@@ -241,6 +244,15 @@ async function sendNotificationRecord({
   return { record: updated, signal: result.signal };
 }
 
+/**
+ * Derived from what a summary summarizes, so a summary that is still sent twice
+ * is written as one message.
+ */
+const summarySignalId = (records: NotificationRecord[]): string =>
+  createHash('sha256')
+    .update(JSON.stringify(records.map(record => [record.threadId, record.id, record.summaryAt?.getTime()]).sort()))
+    .digest('hex');
+
 async function sendNotificationSummary({
   mastra,
   storage,
@@ -266,6 +278,14 @@ async function sendNotificationSummary({
     now,
   });
   if (decision.hold) return null;
+  // Claim before sending, so of overlapping dispatches over one due set only one summarizes each
+  // record. Narrowed in place: the caller's failure handling then covers only the claimed records.
+  const claimed: NotificationRecord[] = [];
+  for (const record of records) {
+    if (await storage.claimNotificationSummary({ threadId: record.threadId, id: record.id, now })) claimed.push(record);
+  }
+  records.splice(0, records.length, ...claimed);
+  if (records.length === 0) return null;
   // The all-low-priority batch persists without waking, so it never starts a
   // run. It still needs the policy's request context: resolving the agent's
   // memory to write the summary can depend on who the thread belongs to.
@@ -274,7 +294,7 @@ async function sendNotificationSummary({
     record => readNotificationRoutingRequirement(record.metadata)?.requireClaimedOwner === true,
   );
   const summary = summarizeNotifications(records);
-  const signal = createNotificationSummarySignal(summary);
+  const signal = createNotificationSummarySignal(summary, summarySignalId(records));
   const persistRequestContext = decision.streamOptions?.requestContext;
   const target: SendAgentSignalOptions = allLowPriority
     ? {
@@ -304,7 +324,6 @@ async function sendNotificationSummary({
       await storage.updateNotification({
         id: record.id,
         threadId: record.threadId,
-        summaryAt: null,
         summarySignalId: result.signal.id,
         lastDeliveryAttemptAt: now,
       }),

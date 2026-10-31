@@ -524,6 +524,16 @@ export class NotificationsPG extends NotificationsStorage {
     return updated;
   }
 
+  // One conditional write, so only one of overlapping dispatches clears a due summary.
+  override async claimNotificationSummary(input: { threadId: string; id: string; now: Date }): Promise<boolean> {
+    const tableName = getTableName({ indexName: TABLE_NOTIFICATIONS, schemaName: getSchemaName(this.#schema) });
+    const result = await this.#db.client.query(
+      `UPDATE ${tableName} SET "summaryAt" = NULL, "updatedAt" = $1 WHERE "threadId" = $2 AND "id" = $3 AND "status" = 'pending' AND "summaryAt" IS NOT NULL AND "summaryAt" <= $4`,
+      [new Date(), input.threadId, input.id, input.now],
+    );
+    return (result.rowCount ?? 0) > 0;
+  }
+
   // Inlined instead of importing `UpdateNotificationsStatusInput` so this adapter's `.d.ts` stays valid
   // against older @mastra/core versions that predate the bulk method.
   override async updateNotificationsStatus(input: {
