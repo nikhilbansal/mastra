@@ -37,6 +37,7 @@ export class OrchestrationWorker extends MastraWorker {
   #processor?: WorkflowEventProcessor;
   #strategy?: StepExecutionStrategy;
   #running = false;
+  #starting?: Promise<void>;
 
   constructor(config: OrchestrationWorkerConfig = {}) {
     super();
@@ -86,9 +87,17 @@ export class OrchestrationWorker extends MastraWorker {
   async start(): Promise<void> {
     if (this.#running) return;
     if (!this.deps) throw new Error('OrchestrationWorker: call init() before start()');
+    // Concurrent starts (startWorkers() racing a lazy execution start) share
+    // one start, so only one PullTransport subscribes.
+    this.#starting ??= this.#startTransport(this.deps).finally(() => {
+      this.#starting = undefined;
+    });
+    await this.#starting;
+  }
 
+  async #startTransport(deps: WorkerDeps): Promise<void> {
     const group = this.#config.group ?? DEFAULT_GROUP;
-    this.#transport = new PullTransport({ pubsub: this.deps.pubsub, group, logger: this.deps.logger });
+    this.#transport = new PullTransport({ pubsub: deps.pubsub, group, logger: deps.logger });
 
     await this.#transport.start({
       route: (event, ack, nack, extend) => this.#processEvent(event, ack, nack, extend),

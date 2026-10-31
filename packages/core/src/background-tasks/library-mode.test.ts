@@ -21,8 +21,8 @@ function ctx(executeFn: (args: any, opts?: any) => Promise<any>): TaskContext {
 const tick = (ms = 200) => new Promise(resolve => setTimeout(resolve, ms));
 
 function makeLibraryModeMastra(overrides: ConstructorParameters<typeof Mastra>[0] = {}) {
-  // NOTE: deliberately no `startWorkers()` call anywhere in this file's
-  // happy paths — that is the scenario under test.
+  // NOTE: no happy path in this file relies on `startWorkers()` — the lazy
+  // start is the scenario under test.
   return new Mastra({
     logger: false,
     storage: new MockStore(),
@@ -57,7 +57,15 @@ describe('background tasks in library mode (no startWorkers)', () => {
   });
 
   it('completes concurrent first dispatches on a cold instance, each executor exactly once', async () => {
-    const mastra = makeLibraryModeMastra();
+    // Subscribing resolves later on a network pubsub, so the app's own
+    // startWorkers() overlaps the lazy start of the same workers.
+    const pubsub = new EventEmitterPubSub();
+    const subscribe = pubsub.subscribe.bind(pubsub);
+    const subscribeSpy = vi.spyOn(pubsub, 'subscribe').mockImplementation(async (topic, cb, options) => {
+      await new Promise(resolve => setImmediate(resolve));
+      return subscribe(topic, cb, options);
+    });
+    const mastra = makeLibraryModeMastra({ pubsub });
     const manager = mastra.backgroundTaskManager!;
 
     const executeA = vi.fn().mockResolvedValue('a');
@@ -66,7 +74,11 @@ describe('background tasks in library mode (no startWorkers)', () => {
     const [{ task: taskA }, { task: taskB }] = await Promise.all([
       manager.enqueue({ toolName: 't-a', toolCallId: 'ca', args: {}, agentId: 'a1', runId: 'r1' }, ctx(executeA)),
       manager.enqueue({ toolName: 't-b', toolCallId: 'cb', args: {}, agentId: 'a1', runId: 'r1' }, ctx(executeB)),
+      mastra.__ensureExecutionWorkersStarted(),
+      mastra.startWorkers(),
     ]);
+    // One workflow consumer: a second one would split (or repeat) every workflow event.
+    expect(subscribeSpy.mock.calls.filter(call => call[2]?.group === 'mastra-orchestration')).toHaveLength(1);
 
     const [doneA, doneB] = await Promise.all([
       manager.waitForNextTask([taskA.id], { timeoutMs: 5000 }),

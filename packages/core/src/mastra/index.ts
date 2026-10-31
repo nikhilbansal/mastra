@@ -7298,7 +7298,11 @@ export class Mastra<
       this.#ensureBackgroundTaskManager('full');
     }
 
+    // A lazy `__ensureExecutionWorkersStarted()` may be starting the same
+    // workers: let it finish, then skip what is already running.
+    await this.#executionWorkersStartPromise?.catch(() => {});
     for (const worker of targets) {
+      if (worker.isRunning) continue;
       await worker.init(deps);
       await worker.start();
     }
