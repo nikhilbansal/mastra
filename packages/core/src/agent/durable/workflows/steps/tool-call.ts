@@ -27,6 +27,7 @@ import type { ProcessorState } from '../../../../processors';
 import { BACKGROUND_WORK_CONTEXT } from '../../../../processors/background-work-signals';
 import { ProcessorRunner } from '../../../../processors/runner';
 import type { RequestContext } from '../../../../request-context';
+import { persistProcessorDataChunk } from '../../../../stream/base/output';
 import type { ChunkType } from '../../../../stream/types';
 import { ChunkFrom } from '../../../../stream/types';
 import {
@@ -165,6 +166,7 @@ const durableToolCallOutputSchema = durableToolCallInputSchema.extend({
       z.object({
         type: z.string(),
         data: z.any().optional(),
+        id: z.string().optional(),
         messageId: z.string().optional(),
       }),
     )
@@ -401,10 +403,24 @@ export function createDurableToolCallStep() {
       // local copy whose mutations don't cross the step boundary, so parts are
       // collected here and carried on the output record for the mapping step
       // to persist into the authoritative messageList (#19375 parity port).
-      const processorDataParts: Array<{ type: string; data?: unknown; messageId?: string }> = [];
-      const collectProcessorDataPart = (part: { type: string; data?: unknown; messageId?: string }) => {
+      const processorDataParts: Array<{ type: string; data?: unknown; id?: string; messageId?: string }> = [];
+      const collectProcessorDataPart = (
+        part: { type: string; data?: unknown; id?: string; messageId?: string },
+        persistNow = true,
+      ) => {
         ownership?.throwIfLost();
+        part = { ...part, id: part.id ?? globalThis.crypto.randomUUID() };
         processorDataParts.push(part);
+        // The mapping step is skipped on suspend; its existing flush must already contain the part.
+        const target = messageList ?? resumeMessageList;
+        if (persistNow && target)
+          persistProcessorDataChunk(
+            target,
+            part.messageId ??
+              getStepResult?.<DurableLLMStepOutput>(DurableStepIds.LLM_EXECUTION)?.stepResult.messageId ??
+              initData.messageId,
+            part,
+          );
       };
 
       const resumeData = resumeDataFromArgs ?? workflowResumeData;
@@ -423,6 +439,7 @@ export function createDurableToolCallStep() {
       const initData = getInitData<{
         runId: string;
         agentId: string;
+        messageId: string;
         options: SerializableDurableOptions;
         state: {
           threadId?: string;
@@ -1397,14 +1414,24 @@ export function createDurableToolCallStep() {
       // emit chunks through pubsub (matching the regular agent's tool streaming).
       // Non-transient data-* chunks are also collected for persistence, as the
       // regular agent does for tool-written data parts (#25122).
-      const outputWriter = pubsub
-        ? async (chunk: any) => {
-            if (typeof chunk?.type === 'string' && chunk.type.startsWith('data-') && !chunk.transient) {
-              collectProcessorDataPart({ type: chunk.type, data: chunk.data, messageId: chunk.messageId });
-            }
-            await emitChunkEvent(pubsub, runId, chunk as ChunkType);
+      const emitToolOutputChunk = async (chunk: any, persistNow = true) => {
+        const output = chunk?.type === 'tool-output' ? chunk.payload?.output : chunk;
+        if (typeof output?.type === 'string' && output.type.startsWith('data-')) {
+          if (!output.transient) {
+            collectProcessorDataPart(
+              {
+                type: output.type,
+                data: output.data,
+                id: typeof output.id === 'string' ? output.id : undefined,
+                messageId: output.messageId,
+              },
+              persistNow,
+            );
           }
-        : undefined;
+        }
+        await emitChunkEvent(pubsub!, runId, chunk as ChunkType);
+      };
+      const outputWriter = pubsub ? async (chunk: any) => emitToolOutputChunk(chunk) : undefined;
 
       let delegationMessages = registryEntry?.runScope?.get(STEP_MODEL_MESSAGES_KEY);
       if (isAgentTool && !delegationMessages && contextMessageList) {
@@ -1690,7 +1717,7 @@ export function createDurableToolCallStep() {
                     },
                     outputWriter: async (chunk: any) => {
                       await taskContext?.onProgress?.(chunk);
-                      return toolOptions.outputWriter?.(chunk);
+                      return pubsub ? emitToolOutputChunk(chunk, false) : undefined;
                     },
                   } as any),
                 onCancelError: error => logger?.warn('Failed to cancel adopted background operation', error),

@@ -363,7 +363,8 @@ describe('MastraModelOutput', () => {
         id: 'custom-emitter',
         name: 'Custom Emitter',
         processOutputResult: async ({ messages, writer }) => {
-          await writer!.custom({ type: 'data-moderation', data: { flagged: true } });
+          await writer!.custom({ type: 'data-moderation', id: 'moderation', data: { flagged: false } });
+          await writer!.custom({ type: 'data-moderation', id: 'moderation', data: { flagged: true } });
           return messages;
         },
       };
@@ -400,7 +401,7 @@ describe('MastraModelOutput', () => {
         chunks.push(chunk);
       }
 
-      const customChunk = chunks.find(c => c.type === 'data-moderation');
+      const customChunk = chunks.findLast(c => c.type === 'data-moderation');
       const finishIndex = chunks.findIndex(c => c.type === 'finish');
       const customIndex = chunks.findIndex(c => c.type === 'data-moderation');
 
@@ -408,6 +409,12 @@ describe('MastraModelOutput', () => {
       expect((customChunk as any).data).toEqual({ flagged: true });
       // Custom chunk should appear before the finish chunk
       expect(customIndex).toBeLessThan(finishIndex);
+      expect(
+        messageList.get.all
+          .db()
+          .flatMap(message => message.content.parts)
+          .filter(part => part.type === 'data-moderation'),
+      ).toEqual([expect.objectContaining({ type: 'data-moderation', id: 'moderation', data: { flagged: true } })]);
     });
 
     it('should include traceId and spanId in the final stream result when tracing context exists', async () => {

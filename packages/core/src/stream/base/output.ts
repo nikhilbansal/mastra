@@ -128,16 +128,36 @@ export function createDestructurableOutput<OUTPUT = undefined>(
 export function persistProcessorDataChunk(
   messageList: MessageList,
   messageId: string,
-  chunk: { type: string; data?: unknown; transient?: boolean },
+  chunk: { type: string; data?: unknown; id?: string; transient?: boolean },
 ): void {
   if (!isDataChunk(chunk) || chunk.transient) return;
+
+  const part = {
+    type: chunk.type as `data-${string}`,
+    data: chunk.data,
+    ...(typeof chunk.id === 'string' ? { id: chunk.id } : {}),
+  };
+  const messages = messageList.get.all.db();
+  const existing = messages.find(message => message.id === messageId && message.role === 'assistant');
+  const parts = existing?.content.parts ?? [];
+  const index = parts.findIndex(
+    candidate =>
+      typeof chunk.id === 'string' && candidate.type === chunk.type && 'id' in candidate && candidate.id === chunk.id,
+  );
+  // Older messages require replacement; the latest message otherwise merges new parts in place.
+  if (existing && (index !== -1 || existing !== messages.at(-1))) {
+    if (index === -1) parts.push(part);
+    else parts[index] = part;
+    messageList.add(existing, 'response', { merge: false });
+    return;
+  }
 
   const message: MastraDBMessage = {
     id: messageId,
     role: 'assistant',
     content: {
       format: 2,
-      parts: [{ type: chunk.type as `data-${string}`, data: chunk.data }],
+      parts: [part],
     },
     createdAt: new Date(),
   };

@@ -22,6 +22,7 @@ import { EventEmitterPubSub } from '../../../events/event-emitter';
 import { Mastra } from '../../../mastra';
 import { MockMemory } from '../../../memory/mock';
 import { InMemoryStore } from '../../../storage';
+import { createTool } from '../../../tools';
 import { Agent } from '../../agent';
 import type { CreatedAgentSignal } from '../../signals';
 import { createSignal } from '../../signals';
@@ -40,12 +41,12 @@ let modelCallCount = 0;
  * Two calls → two iterations, giving the predicate a chance to drain
  * signals between them.
  */
-function makeToolThenStopModel() {
+function makeToolThenStopModel(toolSteps = 1) {
   modelCallCount = 0;
   return new MockLanguageModelV2({
     doStream: async () => {
       modelCallCount++;
-      if (modelCallCount === 1) {
+      if (modelCallCount <= toolSteps) {
         return {
           stream: convertArrayToReadableStream([
             { type: 'stream-start', warnings: [] },
@@ -55,7 +56,7 @@ function makeToolThenStopModel() {
               toolCallType: 'function',
               toolCallId: `tc-${modelCallCount}`,
               toolName: 'myTool',
-              input: JSON.stringify({ x: 1 }),
+              input: JSON.stringify({ x: modelCallCount }),
               providerExecuted: false,
             },
             {
@@ -255,22 +256,29 @@ describe.each([false, true])('DurableAgent signal drain (excluded: %s)', exclude
   });
 
   describe('inter-iteration signal drain (Bug 5)', () => {
-    it.each(
-      (['user', 'reactive', 'system-reminder'] as const).flatMap(type => [1, 2].map(drainAt => ({ type, drainAt }))),
-    )('drains pending $type signals at drain $drainAt with matching visibility', async ({ type, drainAt }) => {
-      const myTool = {
+    it.each([
+      ...(['user', 'reactive', 'system-reminder'] as const).flatMap(type => [1, 2].map(drainAt => ({ type, drainAt }))),
+      ...(!excluded ? [{ type: 'user' as const, drainAt: 3 }] : []),
+    ])('drains pending $type signals at drain $drainAt with matching visibility', async ({ type, drainAt }) => {
+      const myTool = createTool({
+        id: 'myTool',
         description: 'A tool',
-        parameters: z.object({ x: z.number() }),
-        execute: async ({ x }: { x: number }) => `result-${x}`,
-      };
+        inputSchema: z.object({ x: z.number() }),
+        execute: async ({ x }, context) => {
+          await context?.writer?.custom({ type: 'data-card', id: `card-${x}`, data: { x } });
+          return `result-${x}`;
+        },
+      });
 
-      const model = makeToolThenStopModel();
+      const model = makeToolThenStopModel(2);
+      const memory = new MockMemory();
       const agent = new Agent({
         id: 'inter-iter-drain-agent',
         name: 'inter-iter-drain-agent',
         instructions: 'You are helpful.',
         model,
         tools: { myTool },
+        memory,
       });
 
       const durableAgent = createDurableAgent({ agent, pubsub });
@@ -303,6 +311,7 @@ describe.each([false, true])('DurableAgent signal drain (excluded: %s)', exclude
       });
 
       const { fullStream, cleanup } = await durableAgent.stream('Hello', {
+        memory: { thread: 'signal-card', resource: 'signal-card' },
         maxSteps: 5,
         hideSignals: excluded ? [type] : undefined,
       });
@@ -321,6 +330,19 @@ describe.each([false, true])('DurableAgent signal drain (excluded: %s)', exclude
 
       // The drain function should have been called at least once
       expect(drainCallCount).toBeGreaterThanOrEqual(1);
+      const recalled = await memory.recall({ threadId: 'signal-card', resourceId: 'signal-card' });
+      const toolMessage = recalled.messages.find(message =>
+        message.content.parts.some(
+          part => part.type === 'tool-invocation' && part.toolInvocation.toolCallId === 'tc-2',
+        ),
+      );
+      expect.soft(toolMessage?.content.parts).toContainEqual(
+        expect.objectContaining({
+          type: 'data-card',
+          id: 'card-2',
+          data: { x: 2 },
+        }),
+      );
     });
 
     it.each(['user', 'reactive', 'system-reminder'] as const)(

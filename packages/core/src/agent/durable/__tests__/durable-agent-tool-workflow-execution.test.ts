@@ -20,6 +20,7 @@ import { createStep, createWorkflow } from '../../../workflows';
 import { Agent } from '../../agent';
 import { AGENT_STREAM_TOPIC, AgentStreamEventTypes } from '../constants';
 import { createDurableAgent } from '../create-durable-agent';
+import { globalRunRegistry } from '../run-registry';
 import type { AgentStreamEvent } from '../types';
 
 // ============================================================================
@@ -1074,6 +1075,8 @@ describe('DurableAgent workflow-as-tool suspension and resume', () => {
 
     const receivedResumeData: any[] = [];
     let stepExecutions = 0;
+    const memory = new MockMemory();
+    const memoryOptions = { thread: 'nested-custom-parts', resource: 'nested-custom-parts' };
 
     const askStep = createStep({
       id: 'ask-user',
@@ -1081,11 +1084,20 @@ describe('DurableAgent workflow-as-tool suspension and resume', () => {
       outputSchema: z.object({ answer: z.string() }),
       resumeSchema: z.object({ answer: z.string() }),
       suspendSchema: z.object({ question: z.string() }),
-      execute: async ({ inputData, resumeData, suspend }) => {
+      execute: async ({ inputData, resumeData, suspend, writer }) => {
         stepExecutions++;
+        // Synthetic resume/identity races are unreachable cheaply through a model/browser turn.
+        await writer.custom({ type: 'data-anonymous', data: { execution: stepExecutions } });
+        await writer.custom({ type: 'data-question', id: 'question', data: { state: 'opening' } });
+        await writer.custom({
+          type: 'data-question',
+          id: 'question',
+          data: { state: resumeData?.answer ? 'answered' : 'question' },
+        });
         if (!resumeData?.answer) {
           return suspend({ question: `What do you want for ${inputData.topic}?` });
         }
+        if (resumeData.answer === 'confirm') return suspend({ question: 'Confirm lunch?' });
         receivedResumeData.push(resumeData);
         return { answer: resumeData.answer };
       },
@@ -1105,6 +1117,7 @@ describe('DurableAgent workflow-as-tool suspension and resume', () => {
       instructions: 'Use the askUserWorkflow to ask the user questions',
       model: mockModel as LanguageModelV2,
       workflows: { askUserWorkflow },
+      memory,
     });
     const durableAgent = createDurableAgent({ agent: baseAgent, pubsub });
 
@@ -1116,7 +1129,9 @@ describe('DurableAgent workflow-as-tool suspension and resume', () => {
     });
 
     let suspendedData: any = null;
-    const { runId, cleanup } = await durableAgent.stream('Ask me about lunch', {
+    const { runId, cleanup, fullStream } = await durableAgent.stream('Ask me about lunch', {
+      memory: memoryOptions,
+      closeOnSuspend: true,
       onSuspended: data => {
         suspendedData = data;
       },
@@ -1129,6 +1144,65 @@ describe('DurableAgent workflow-as-tool suspension and resume', () => {
     expect(suspendedData.toolName).toBe('workflow-askUserWorkflow');
     expect(suspendedData.suspendPayload).toEqual({ question: 'What do you want for lunch?' });
     expect(stepExecutions).toBe(1);
+    const chunks: any[] = [];
+    for await (const chunk of fullStream) chunks.push(chunk);
+    expect
+      .soft(chunks.filter(chunk => chunk.type === 'tool-output' && chunk.payload.output?.type === 'data-question'))
+      .toMatchObject([
+        {
+          type: 'tool-output',
+          from: 'USER',
+          runId,
+          payload: {
+            toolCallId: 'call-1',
+            toolName: 'workflow-askUserWorkflow',
+            output: { type: 'data-question', id: 'question', data: { state: 'opening' } },
+          },
+        },
+        {
+          type: 'tool-output',
+          from: 'USER',
+          runId,
+          payload: {
+            toolCallId: 'call-1',
+            toolName: 'workflow-askUserWorkflow',
+            output: { type: 'data-question', id: 'question', data: { state: 'question' } },
+          },
+        },
+      ]);
+    const beforeResume = await memory.recall({ threadId: memoryOptions.thread, resourceId: memoryOptions.resource });
+    expect
+      .soft(
+        beforeResume.messages.flatMap(message => message.content.parts).filter(part => part.type === 'data-question'),
+      )
+      .toEqual([expect.objectContaining({ type: 'data-question', id: 'question', data: { state: 'question' } })]);
+
+    // A remote worker has persisted memory but no registry transcript cache.
+    const originalGet = globalRunRegistry.get;
+    try {
+      globalRunRegistry.get = ((...args: Parameters<typeof originalGet>) => {
+        const entry = originalGet.apply(globalRunRegistry, args);
+        if (entry) entry.messageList = undefined;
+        return entry;
+      }) as typeof originalGet;
+      const cold = await durableAgent.resume(
+        runId,
+        { answer: 'confirm' },
+        { memory: memoryOptions, closeOnSuspend: true },
+      );
+      for await (const _chunk of cold.fullStream) {
+        /* wait for the second persisted suspension */
+      }
+      cold.cleanup();
+    } finally {
+      globalRunRegistry.get = originalGet;
+    }
+    const secondQuestion = await memory.recall({ threadId: memoryOptions.thread, resourceId: memoryOptions.resource });
+    expect
+      .soft(
+        secondQuestion.messages.flatMap(message => message.content.parts).filter(part => part.type === 'data-question'),
+      )
+      .toEqual([expect.objectContaining({ type: 'data-question', id: 'question', data: { state: 'answered' } })]);
 
     // Resume with the user's answer
     let finishData: any = null;
@@ -1136,6 +1210,7 @@ describe('DurableAgent workflow-as-tool suspension and resume', () => {
       runId,
       { answer: 'pizza' },
       {
+        memory: memoryOptions,
         onFinish: data => {
           finishData = data;
         },
@@ -1148,13 +1223,30 @@ describe('DurableAgent workflow-as-tool suspension and resume', () => {
     // without resumeData, and a lost runId fails with
     // AGENT_WORKFLOW_TOOL_EXECUTION_FAILED before reaching the step)
     expect(receivedResumeData).toEqual([{ answer: 'pizza' }]);
-    expect(stepExecutions).toBe(2);
+    expect(stepExecutions).toBe(3);
 
     // No workflow tool execution error in the finish payload
     const toolErrors = (finishData?.steps ?? [])
       .flatMap((step: any) => step?.toolResults ?? [])
       .filter((result: any) => result?.error);
     expect(toolErrors).toEqual([]);
+    for await (const _chunk of resumeResult.fullStream) {
+      /* drain the resumed segment */
+    }
+    const afterResume = await memory.recall({ threadId: memoryOptions.thread, resourceId: memoryOptions.resource });
+    expect
+      .soft(
+        afterResume.messages.flatMap(message => message.content.parts).filter(part => part.type === 'data-question'),
+      )
+      .toEqual([expect.objectContaining({ type: 'data-question', id: 'question', data: { state: 'answered' } })]);
+    expect
+      .soft(
+        afterResume.messages
+          .flatMap(message => message.content.parts)
+          .filter(part => part.type === 'data-anonymous')
+          .map(part => part.data),
+      )
+      .toEqual([{ execution: 1 }, { execution: 2 }, { execution: 3 }]);
 
     resumeResult.cleanup();
     cleanup();
