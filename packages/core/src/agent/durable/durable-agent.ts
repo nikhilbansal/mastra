@@ -3360,8 +3360,13 @@ export class DurableAgent<
     // background. Tearing down the reader first would drop it, leaving the
     // output unsettled and the thread busy forever (#25974).
     const cleanup = () => {
-      if (cleanedUp || output.status !== 'running') return performCleanup();
-      void Promise.race([workflowExecution, executionFence.whenSettled])
+      // After a resume, a newer segment owns the run and this one has already settled: wait for that segment.
+      const current = this.#segmentOwner.get(runId) === segment ? undefined : getRunRegistryEntry(runId, this.#mastra);
+      if (cleanedUp || (output.status !== 'running' && !current)) return performCleanup();
+      void Promise.race([
+        current?.workflowExecution ?? workflowExecution,
+        current?.executionFence?.whenSettled ?? executionFence.whenSettled,
+      ])
         .then(() => this.pubsub.flush())
         .then(() => waitForEventDelivery())
         .catch(() => {})

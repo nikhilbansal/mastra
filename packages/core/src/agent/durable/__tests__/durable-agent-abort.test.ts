@@ -14,11 +14,14 @@
  */
 
 import type { LanguageModelV2 } from '@ai-sdk/provider-v5';
-import { MockLanguageModelV2 } from '@internal/ai-sdk-v5/test';
+import { MockLanguageModelV2, convertArrayToReadableStream } from '@internal/ai-sdk-v5/test';
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
+import { z } from 'zod';
 import { EventEmitterPubSub } from '../../../events/event-emitter';
 import { Mastra } from '../../../mastra';
+import { MockMemory } from '../../../memory/mock';
 import { InMemoryStore } from '../../../storage';
+import { createTool } from '../../../tools';
 import { Agent } from '../../agent';
 import { agentThreadStreamRuntime } from '../../thread-stream-runtime';
 import { createDurableAgent } from '../create-durable-agent';
@@ -485,6 +488,93 @@ describe('DurableAgent abort signal', () => {
     expect(abortPayload?.steps.at(-1)?.finishReason).toBe('abort');
 
     cleanup();
+  });
+
+  // Resuming an approval moves the run to a new segment while the initial sendMessage wake is still open.
+  it('abortRunStream retires a run resumed after a tool approval so the next message starts a new run', async () => {
+    let streaming: () => void;
+    const modelCalled = new Promise<void>(resolve => {
+      streaming = resolve;
+    });
+    const abortable = createAbortableModel(() => streaming());
+    let calls = 0;
+    const model = new MockLanguageModelV2({
+      doStream: async options => {
+        if (++calls === 2) return abortable.doStream(options);
+        return {
+          stream: convertArrayToReadableStream([
+            ...(calls === 1
+              ? [{ type: 'tool-call' as const, toolCallId: 'approval-1', toolName: 'approval', input: '{}' }]
+              : []),
+            {
+              type: 'finish' as const,
+              finishReason: calls === 1 ? ('tool-calls' as const) : ('stop' as const),
+              usage: { inputTokens: 1, outputTokens: 1, totalTokens: 2 },
+            },
+          ]),
+          rawCall: { rawPrompt: null, rawSettings: {} },
+        };
+      },
+    });
+    const durableAgent = createDurableAgent({
+      agent: new Agent({
+        id: 'abort-resumed-run-agent',
+        name: 'Abort Resumed Run Agent',
+        instructions: 'Test',
+        model: model as LanguageModelV2,
+        memory: new MockMemory(),
+        tools: {
+          approval: createTool({
+            id: 'approval',
+            inputSchema: z.object({}),
+            requireApproval: true,
+            execute: async () => 'approved',
+          }),
+        },
+      }),
+      pubsub,
+    });
+    const mastra = new Mastra({
+      agents: { durableAgent },
+      storage: new InMemoryStore(),
+      pubsub,
+      backgroundTasks: { enabled: true },
+      logger: false,
+    });
+    const scope = { threadId: 'abort-resumed-run-thread', resourceId: 'abort-resumed-run-resource' };
+
+    try {
+      const first = await durableAgent.sendMessage('Go', scope).accepted;
+      expect(first.action).toBe('wake');
+      void first.output.consumeStream();
+      await vi.waitFor(() => expect(first.output.status).toBe('suspended'));
+      await durableAgent.sendToolApproval({
+        ...scope,
+        runId: first.runId,
+        toolCallId: 'approval-1',
+        approved: true,
+        streamOptions: { untilIdle: false },
+      });
+      await modelCalled;
+
+      expect(durableAgent.abortRunStream(first.runId)).toBe(true);
+      await vi.waitFor(
+        async () => {
+          expect(durableAgent.getActiveThreadRunId(scope)).toBeUndefined();
+          expect(agentThreadStreamRuntime.hasThreadRun(first.runId, pubsub)).toBe(false);
+          expect(await pubsub.getLeaseOwner(`${scope.resourceId}\u0000${scope.threadId}`)).toBeUndefined();
+        },
+        { timeout: 5000 },
+      );
+
+      const next = await durableAgent.sendMessage('Continue', scope).accepted;
+      expect(next.action).toBe('wake');
+      expect(next.runId).not.toBe(first.runId);
+      await next.output.consumeStream();
+      expect(next.output.status).toBe('success');
+    } finally {
+      await mastra.shutdown({ drainTimeout: 100 });
+    }
   });
   // The run abort route answers with __abortRunAcknowledged. On the process
   // executing the run it must still confirm, with or without a memory thread.
