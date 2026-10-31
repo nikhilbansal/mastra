@@ -324,17 +324,20 @@ export class ResourceScopedObservationStrategy extends ObservationStrategy {
         this.priorMetadataByThread.get(threadId),
         this.observationConfig.extractors,
       );
+      const extractors = result.extractors ?? this.observationConfig.extractors;
       const hookedValues = await applyExtractorHooks({
         source: 'observer',
-        extractors: result.extractors ?? this.observationConfig.extractors,
+        extractors,
         values: result.extractedValues,
         failures: result.extractionFailures,
         previousValues,
         rawObservations: result.observations,
-        recentMessages: formatMessagesForObserver(threadMessages, {
-          maxPartLength: 500,
-          timeZone: this.opts.record.observedTimezone,
-        }),
+        recentMessages: extractors.some(extractor => extractor.onExtracted && !extractor.internal)
+          ? formatMessagesForObserver(threadMessages, {
+              maxPartLength: 500,
+              timeZone: this.opts.record.observedTimezone,
+            })
+          : undefined,
         threadId,
         resourceId: this.resourceId,
         mainAgent: this.opts.agent,

@@ -131,17 +131,20 @@ export class SyncObservationStrategy extends ObservationStrategy {
       timeZone: this.opts.record.observedTimezone,
       currentModel: this.opts.currentModel,
     });
+    const extractors = result.extractors ?? this.observationConfig.extractors;
     const hookedValues = await applyExtractorHooks({
       source: 'observer',
-      extractors: result.extractors ?? this.observationConfig.extractors,
+      extractors,
       values: result.extractedValues,
       failures: result.extractionFailures,
       previousValues: this.priorExtractedValues,
       rawObservations: result.observations,
-      recentMessages: formatMessagesForObserver(this.opts.messages, {
-        maxPartLength: 500,
-        timeZone: this.opts.record.observedTimezone,
-      }),
+      recentMessages: extractors.some(extractor => extractor.onExtracted && !extractor.internal)
+        ? formatMessagesForObserver(this.opts.messages, {
+            maxPartLength: 500,
+            timeZone: this.opts.record.observedTimezone,
+          })
+        : undefined,
       threadId: this.opts.threadId,
       resourceId: this.opts.resourceId,
       mainAgent: this.opts.agent,

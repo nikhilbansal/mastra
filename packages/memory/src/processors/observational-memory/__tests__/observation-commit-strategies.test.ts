@@ -12,12 +12,13 @@
 import { MockLanguageModelV2, convertArrayToReadableStream } from '@internal/ai-sdk-v5/test';
 import type { MastraDBMessage, MastraMessageContentV2 } from '@mastra/core/agent';
 import { InMemoryMemory, InMemoryDB } from '@mastra/core/storage';
-import { beforeEach, describe, expect, it } from 'vitest';
+import { beforeEach, describe, expect, it, onTestFinished, vi } from 'vitest';
 
 import { BufferingCoordinator } from '../buffering-coordinator';
 import { Extractor } from '../extractor';
 import type { ExtractorOnExtractedContext } from '../extractor';
 import { ObservationalMemory } from '../observational-memory';
+import * as observerAgent from '../observer-agent';
 
 const threadId = 'commit-thread';
 const resourceId = 'commit-resource';
@@ -244,4 +245,31 @@ describe('observation commit settlement through the real strategies', () => {
       expect((await storage.getObservationalMemory(null, resourceId))?.activeObservations).toContain('January 15');
     });
   });
+
+  // Only an external hook receives `recentMessages`, so no strategy should render them for anything else.
+  it.each([
+    ['thread', false, true, 0],
+    ['thread', false, false, 1],
+    ['thread', true, true, 0],
+    ['thread', true, false, 1],
+    ['resource', false, true, 0],
+    ['resource', false, false, 1],
+  ] as const)(
+    '%s scope, buffered %s, internal hook %s: renders recent messages %i time(s)',
+    async (scope, buffered, internal, renders) => {
+      const render = vi.spyOn(observerAgent, 'formatMessagesForObserver');
+      onTestFinished(() => render.mockRestore());
+      const extractor = new Extractor({ name: 'Hook', mode: 'hook', onExtracted: () => {} }, internal);
+      const om = createOM(storage, { scope, buffered, extractor });
+
+      if (buffered) {
+        await om.buffer({ threadId, resourceId });
+        await om.waitForBuffering(threadId, resourceId, 5000);
+      } else {
+        await om.observe({ threadId, resourceId, messages: createMessages(5) });
+      }
+
+      expect(render).toHaveBeenCalledTimes(renders);
+    },
+  );
 });
