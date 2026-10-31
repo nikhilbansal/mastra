@@ -2825,6 +2825,19 @@ ${formattedMessages}
     let skipped = 0;
     let backoffTriggered = false;
     const retentionCounter = typeof retentionFloor === 'number' ? new TokenCounter() : null;
+    // Count each message once and keep a running total, instead of recounting the transcript per candidate.
+    const retentionCounts = new Map<string, number>();
+    let remainingTokens = 0;
+    if (retentionCounter) {
+      for (const msg of messages) {
+        if (!msg?.id || msg.id === 'om-continuation') continue;
+        const tokens = retentionCounter.countMessage(msg);
+        // countMessages() adds the per-conversation overhead, so include it once with the first message.
+        remainingTokens += retentionCounts.size === 0 ? retentionCounter.countMessages([msg]) : tokens;
+        retentionCounts.set(msg.id, tokens);
+      }
+    }
+    let remainingCount = retentionCounts.size;
 
     for (const msg of messages) {
       if (!msg?.id || msg.id === 'om-continuation' || !observedSet.has(msg.id)) continue;
@@ -2837,20 +2850,23 @@ ${formattedMessages}
       const totalParts = msg.content?.parts?.length ?? 0;
 
       if (unobservedParts.length > 0 && unobservedParts.length < totalParts) {
+        const previousTokens = retentionCounts.get(msg.id) ?? 0;
         msg.content.parts = unobservedParts;
+        const tokens = retentionCounter?.countMessage(msg) ?? 0;
+        remainingTokens += tokens - previousTokens;
+        retentionCounts.set(msg.id, tokens);
         continue;
       }
 
       if (retentionCounter && typeof retentionFloor === 'number') {
-        const nextRemainingMessages = messages.filter(
-          m => m?.id && m.id !== 'om-continuation' && !idsToRemove.has(m.id) && m.id !== msg.id,
-        );
-        const remainingIfRemoved = retentionCounter.countMessages(nextRemainingMessages);
+        const remainingIfRemoved = remainingCount === 1 ? 0 : remainingTokens - retentionCounts.get(msg.id)!;
         if (remainingIfRemoved < retentionFloor) {
           skipped += 1;
           backoffTriggered = true;
           break;
         }
+        remainingTokens = remainingIfRemoved;
+        remainingCount -= 1;
       }
 
       idsToRemove.add(msg.id);
@@ -2858,16 +2874,12 @@ ${formattedMessages}
     }
 
     if (retentionCounter && typeof retentionFloor === 'number' && idsToRemove.size > 0) {
-      let remainingMessages = messages.filter(m => m?.id && m.id !== 'om-continuation' && !idsToRemove.has(m.id));
-      let remainingTokens = retentionCounter.countMessages(remainingMessages);
-
       while (remainingTokens < retentionFloor && removalOrder.length > 0) {
         const restoreId = removalOrder.pop()!;
         idsToRemove.delete(restoreId);
         skipped += 1;
         backoffTriggered = true;
-        remainingMessages = messages.filter(m => m?.id && m.id !== 'om-continuation' && !idsToRemove.has(m.id));
-        remainingTokens = retentionCounter.countMessages(remainingMessages);
+        remainingTokens += retentionCounts.get(restoreId)!;
       }
     }
 

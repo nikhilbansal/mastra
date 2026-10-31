@@ -16653,6 +16653,30 @@ describe('Single-thread replay red tests', () => {
     });
 
     expect(idsToRemove).toEqual([]);
+
+    const messages = Array.from({ length: 32 }, (_, index) => ({
+      id: `observed-${index}`,
+      threadId,
+      resourceId,
+      role: 'assistant' as const,
+      content: { format: 2 as const, parts: [{ type: 'text' as const, text: 'Observed message' }] },
+      createdAt: new Date('2025-01-01T10:00:00.000Z'),
+    }));
+    const retentionFloor = new TokenCounter().countMessages(messages.slice(-2));
+    const countMessage = vi.spyOn(TokenCounter.prototype, 'countMessage');
+    try {
+      const removed = await om.getObservedMessageIdsForCleanup({
+        threadId,
+        resourceId,
+        messages,
+        observedMessageIds: messages.map(message => message.id),
+        retentionFloor,
+      });
+      expect(removed).toEqual(messages.slice(0, -2).map(message => message.id));
+      expect(countMessage.mock.calls.length).toBeLessThan(2 * messages.length);
+    } finally {
+      countMessage.mockRestore();
+    }
   });
 
   it('T2-D2: cleanupMessages mutates plain arrays too', async () => {
